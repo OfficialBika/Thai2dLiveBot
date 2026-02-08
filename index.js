@@ -19,6 +19,37 @@ const bot = new TelegramBot(BOT_TOKEN);
 // ===== SET WEBHOOK =====
 bot.setWebHook(WEBHOOK_URL);
 
+bot.onText(/\/start/, (msg) => {
+  const chatId = msg.chat.id;
+
+  bot.sendMessage(
+    chatId,
+`🎯 Myanmar 2D Live Bot
+
+⏰ Market Time (Myanmar)
+🌅 Morning : 11:45 – 12:02
+🌆 Evening : 3:59 – 4:31
+
+🔴 Live numbers = Red dot
+✅ Final result = Check + Pin
+
+2D ဂဏန်း တိုက်ရိုက်ကြည့်ရန်
+Channel ကို join ပါ 👇`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "🔔 Join 2D Live Channel",
+              url: "https://t.me/Live2DSet"
+            }
+          ]
+        ]
+      }
+    }
+  );
+});
+
 // ===== STATE =====
 let lastMorningLive = null;
 let lastEveningLive = null;
