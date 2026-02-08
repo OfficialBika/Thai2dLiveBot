@@ -1,7 +1,7 @@
 /**
- * Thai 2D Hybrid Auto Bot
- * Source: https://www.thaistock2d.com/
- * Hosting: Render Free Web Service
+ * Thai 2D Live + Final Bot (RAM only)
+ * Source  : https://www.thaistock2d.com/
+ * Hosting : Render Free Web Service
  */
 
 const TelegramBot = require("node-telegram-bot-api");
@@ -9,184 +9,174 @@ const axios = require("axios");
 const cheerio = require("cheerio");
 const http = require("http");
 
-// ===== BOT INIT =====
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
-
-const ADMIN_ID = Number(process.env.ADMIN_ID);
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
 // ===== STATE =====
-let users = new Set();
-let history = [];
+let lastMorningLive = null;
+let lastEveningLive = null;
+let finalMorning = null;
+let finalEvening = null;
+let lastPinnedMessageId = null;
+let lastErrorAt = 0;
 
-let morningResult = null;
-let eveningResult = null;
-let lastScrapeErrorAt = 0;
-
-// ===== UTIL FUNCTIONS =====
-function saveHistory(time, result) {
-  history.unshift({
-    time,
-    result,
-    date: new Date().toLocaleString("th-TH", {
-      timeZone: "Asia/Bangkok"
+// ===== TIME (MYANMAR) =====
+function getMyanmarPrettyDateTime() {
+  return new Date()
+    .toLocaleString("en-US", {
+      timeZone: "Asia/Yangon",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true
     })
-  });
-  if (history.length > 20) history.pop();
+    .replace(",", " •");
 }
 
-function genSet(num) {
-  let arr = [];
-  for (let i = 0; i <= 9; i++) arr.push(`${num}${i}`);
-  return arr.join(" ");
-}
-
-function genFormula(num) {
-  return num.split("").reverse().join("");
-}
-
-function genPower(num) {
-  return [...new Set(num.split(""))].join(" ");
-}
-
-function postAll(text) {
-  // notify users
-  users.forEach(id => {
-    bot.sendMessage(id, text).catch(() => {});
-  });
-
-  // post to channel
-  bot.sendMessage(CHANNEL_ID, text).catch(() => {});
-}
-
-// ===== BOT COMMANDS =====
-bot.onText(/\/start/, msg => {
-  users.add(msg.chat.id);
-  bot.sendMessage(
-    msg.chat.id,
-`🎯 Thai 2D Hybrid Auto Bot
-
-⏰ Market Time
-🌅 Morning : 11:30
-🌆 Evening : 16:30
-
-✅ Auto scrape
-✅ Auto SET / Formula / Power
-❌ Manual မလို`
+function minutesNowMMT() {
+  const d = new Date(
+    new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" })
   );
-});
+  return d.getHours() * 60 + d.getMinutes();
+}
 
-bot.onText(/\/2d/, msg => {
-  bot.sendMessage(
-    msg.chat.id,
-`📊 Latest Thai 2D
+// ===== TIME WINDOWS =====
+function isMorningWindow() {
+  const m = minutesNowMMT();
+  return m >= 11 * 60 + 45 && m <= 12 * 60 + 2;
+}
 
-🌅 Morning : ${morningResult ?? "❌"}
-🌆 Evening : ${eveningResult ?? "❌"}`
-  );
-});
+function isEveningWindow() {
+  const m = minutesNowMMT();
+  return m >= 15 * 60 + 59 && m <= 16 * 60 + 31;
+}
 
-bot.onText(/\/history/, msg => {
-  if (!history.length)
-    return bot.sendMessage(msg.chat.id, "📊 No history yet");
+function isFinalMoment(type) {
+  const m = minutesNowMMT();
+  if (type === "morning") return m >= 12 * 60;
+  if (type === "evening") return m >= 16 * 60 + 25;
+  return false;
+}
 
-  let text = "📜 Thai 2D History\n\n";
-  history.forEach((h, i) => {
-    text += `${i + 1}. ${h.time} → ${h.result} (${h.date})\n`;
+// ===== POST HELPERS =====
+async function postLive(type, num, set, value) {
+  const label = type === "morning" ? "🌅 MORNING" : "🌆 EVENING";
+
+  const msg =
+`╭───────────╮
+│ ${label} │
+╰───────────╯
+📅 ${getMyanmarPrettyDateTime()}
+
+🎯 *Now 2D* : 🔴 *${num}*
+
+📊 *SET*
+🟢 *${set}*
+
+💰 *VALUE*
+🔵 *${value}*`;
+
+  await bot.sendMessage(CHANNEL_ID, msg, { parse_mode: "Markdown" });
+}
+
+async function postFinal(type, num, set, value) {
+  const label = type === "morning" ? "🌅 MORNING" : "🌆 EVENING";
+
+  const msg =
+`╭───────────╮
+│ ${label} │
+╰───────────╯
+📅 ${getMyanmarPrettyDateTime()}
+
+🎯 *Now 2D* : *${num}* ✅
+
+📊 *SET*
+🟢 *${set}*
+
+💰 *VALUE*
+🔵 *${value}*`;
+
+  const sent = await bot.sendMessage(CHANNEL_ID, msg, {
+    parse_mode: "Markdown"
   });
-  bot.sendMessage(msg.chat.id, text);
-});
 
-// ===== CORE: SCRAPE thaistock2d.com =====
+  if (lastPinnedMessageId) {
+    await bot.unpinChatMessage(CHANNEL_ID, lastPinnedMessageId).catch(() => {});
+  }
+
+  await bot.pinChatMessage(CHANNEL_ID, sent.message_id, {
+    disable_notification: true
+  });
+
+  lastPinnedMessageId = sent.message_id;
+}
+
+// ===== CORE SCRAPER =====
 async function fetchThai2D() {
   try {
-    const url = "https://www.thaistock2d.com/";
-
-    const res = await axios.get(url, {
+    const res = await axios.get("https://www.thaistock2d.com/", {
       timeout: 15000,
       headers: {
         "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-        "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8"
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
       }
     });
 
     const $ = cheerio.load(res.data);
 
-    // thaistock2d live result selectors
-    const results = [];
+    const nums = [];
     $(".live-result .number").each((i, el) => {
-      const num = $(el).text().trim();
-      if (/^\d{2}$/.test(num)) results.push(num);
+      const t = $(el).text().trim();
+      if (/^\d{2}$/.test(t)) nums.push(t);
     });
 
-    const scrapedMorning = results[0] || null;
-    const scrapedEvening = results[1] || null;
+    const sets = [];
+    const values = [];
+    $(".live-result .set").each((i, el) => sets.push($(el).text().trim()));
+    $(".live-result .value").each((i, el) => values.push($(el).text().trim()));
 
-    const now = new Date().toLocaleTimeString("th-TH", {
-      timeZone: "Asia/Bangkok",
-      hour: "2-digit",
-      minute: "2-digit"
-    });
+    const morningNum = nums[0];
+    const eveningNum = nums[1];
 
     // ===== MORNING =====
-    if (scrapedMorning && scrapedMorning !== morningResult) {
-      morningResult = scrapedMorning;
-      saveHistory("Morning", morningResult);
-
-      postAll(
-`🌅 Thai 2D Morning Result
-⏰ ${now}
-🎯 ${morningResult}
-
-🧮 SET
-${genSet(morningResult)}
-
-🔢 Formula
-${genFormula(morningResult)}
-
-⚡ Power
-${genPower(morningResult)}`
-      );
+    if (morningNum && isMorningWindow()) {
+      if (!finalMorning && isFinalMoment("morning")) {
+        finalMorning = morningNum;
+        await postFinal("morning", morningNum, sets[0], values[0]);
+      } else if (morningNum !== lastMorningLive) {
+        lastMorningLive = morningNum;
+        await postLive("morning", morningNum, sets[0], values[0]);
+      }
     }
 
     // ===== EVENING =====
-    if (scrapedEvening && scrapedEvening !== eveningResult) {
-      eveningResult = scrapedEvening;
-      saveHistory("Evening", eveningResult);
-
-      postAll(
-`🌆 Thai 2D Evening Result
-
-⏰ ${now}
-
-🎯 ${eveningResult}
-
-🧮 SET
-${genSet(eveningResult)}
-
-🔢 Formula
-${genFormula(eveningResult)}
-
-⚡ Power
-${genPower(eveningResult)}`
-      );
+    if (eveningNum && isEveningWindow()) {
+      if (!finalEvening && isFinalMoment("evening")) {
+        finalEvening = eveningNum;
+        await postFinal("evening", eveningNum, sets[1], values[1]);
+      } else if (eveningNum !== lastEveningLive) {
+        lastEveningLive = eveningNum;
+        await postLive("evening", eveningNum, sets[1], values[1]);
+      }
     }
-
-  } catch (err) {
+  } catch (e) {
     const t = Date.now();
-    if (t - lastScrapeErrorAt > 120000) {
-      lastScrapeErrorAt = t;
-      console.log("thaistock2d scrape error:", err.message);
+    if (t - lastErrorAt > 120000) {
+      lastErrorAt = t;
+      console.log("Scrape error:", e.message);
     }
   }
 }
 
-// ===== AUTO CHECK EVERY 30s =====
+// ===== LOOP =====
 setInterval(fetchThai2D, 30 * 1000);
 
-// ===== KEEP ALIVE (Render Free) =====
-http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end("Thai 2D Bot is running");
-}).listen(process.env.PORT || 3000);
+// ===== KEEP ALIVE =====
+http
+  .createServer((req, res) => {
+    res.writeHead(200);
+    res.end("Thai 2D Live Bot Running");
+  })
+  .listen(process.env.PORT || 3000);
