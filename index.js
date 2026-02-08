@@ -1,26 +1,52 @@
-require("dotenv").config();
+/**
+ * Thai 2D Hybrid Auto Bot
+ * Source: https://www.thaistock2d.com/
+ * Hosting: Render Free Web Service
+ */
+
 const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
+const cheerio = require("cheerio");
+const http = require("http");
 
+// ===== BOT INIT =====
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
 const ADMIN_ID = Number(process.env.ADMIN_ID);
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
+// ===== STATE =====
 let users = new Set();
 let history = [];
 
 let morningResult = null;
 let eveningResult = null;
+let lastScrapeErrorAt = 0;
 
-// ===== UTIL =====
+// ===== UTIL FUNCTIONS =====
 function saveHistory(time, result) {
   history.unshift({
     time,
     result,
-    date: new Date().toLocaleString("th-TH")
+    date: new Date().toLocaleString("th-TH", {
+      timeZone: "Asia/Bangkok"
+    })
   });
   if (history.length > 20) history.pop();
+}
+
+function genSet(num) {
+  let arr = [];
+  for (let i = 0; i <= 9; i++) arr.push(`${num}${i}`);
+  return arr.join(" ");
+}
+
+function genFormula(num) {
+  return num.split("").reverse().join("");
+}
+
+function genPower(num) {
+  return [...new Set(num.split(""))].join(" ");
 }
 
 function postAll(text) {
@@ -29,36 +55,37 @@ function postAll(text) {
     bot.sendMessage(id, text).catch(() => {});
   });
 
-  // post to single channel
+  // post to channel
   bot.sendMessage(CHANNEL_ID, text).catch(() => {});
 }
 
-// ===== START =====
+// ===== BOT COMMANDS =====
 bot.onText(/\/start/, msg => {
   users.add(msg.chat.id);
   bot.sendMessage(
     msg.chat.id,
-`🎯 Thai 2D Auto Bot
+`🎯 Thai 2D Hybrid Auto Bot
 
 ⏰ Market Time
 🌅 Morning : 11:30
 🌆 Evening : 16:30
 
-🔔 Result ထွက်တာနဲ့ auto ပို့ပေးပါမယ်`
+✅ Auto scrape
+✅ Auto SET / Formula / Power
+❌ Manual မလို`
   );
 });
 
-// ===== RESULT =====
 bot.onText(/\/2d/, msg => {
   bot.sendMessage(
     msg.chat.id,
-`📊 Thai 2D Latest
+`📊 Latest Thai 2D
+
 🌅 Morning : ${morningResult ?? "❌"}
 🌆 Evening : ${eveningResult ?? "❌"}`
   );
 });
 
-// ===== HISTORY =====
 bot.onText(/\/history/, msg => {
   if (!history.length)
     return bot.sendMessage(msg.chat.id, "📊 No history yet");
@@ -67,33 +94,34 @@ bot.onText(/\/history/, msg => {
   history.forEach((h, i) => {
     text += `${i + 1}. ${h.time} → ${h.result} (${h.date})\n`;
   });
-
   bot.sendMessage(msg.chat.id, text);
 });
 
-// ===== ADMIN MANUAL SET =====
-bot.onText(/\/set (morning|evening) (\d{2})/, (msg, m) => {
-  if (msg.from.id !== ADMIN_ID) return;
-
-  const time = m[1];
-  const num = m[2];
-
-  if (time === "morning") morningResult = num;
-  if (time === "evening") eveningResult = num;
-
-  saveHistory(time.toUpperCase(), num);
-
-  postAll(
-`🎉 Thai 2D ${time.toUpperCase()} Result
-🎯 ${num}`
-  );
-});
-
-// ===== AUTO FETCH (REAL API READY) =====
+// ===== CORE: SCRAPE thaistock2d.com =====
 async function fetchThai2D() {
   try {
-    // 🔁 Replace with real Thai 2D API if you have
-    const res = await axios.get("https://example.com/thai2d.json");
+    const url = "https://www.thaistock2d.com/";
+
+    const res = await axios.get(url, {
+      timeout: 15000,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8"
+      }
+    });
+
+    const $ = cheerio.load(res.data);
+
+    // thaistock2d live result selectors
+    const results = [];
+    $(".live-result .number").each((i, el) => {
+      const num = $(el).text().trim();
+      if (/^\d{2}$/.test(num)) results.push(num);
+    });
+
+    const scrapedMorning = results[0] || null;
+    const scrapedEvening = results[1] || null;
 
     const now = new Date().toLocaleTimeString("th-TH", {
       timeZone: "Asia/Bangkok",
@@ -101,34 +129,64 @@ async function fetchThai2D() {
       minute: "2-digit"
     });
 
-    // 🌅 Morning
-    if (res.data.morning && res.data.morning !== morningResult) {
-      morningResult = res.data.morning;
+    // ===== MORNING =====
+    if (scrapedMorning && scrapedMorning !== morningResult) {
+      morningResult = scrapedMorning;
       saveHistory("Morning", morningResult);
 
       postAll(
 `🌅 Thai 2D Morning Result
 ⏰ ${now}
-🎯 ${morningResult}`
+🎯 ${morningResult}
+
+🧮 SET
+${genSet(morningResult)}
+
+🔢 Formula
+${genFormula(morningResult)}
+
+⚡ Power
+${genPower(morningResult)}`
       );
     }
 
-    // 🌆 Evening
-    if (res.data.evening && res.data.evening !== eveningResult) {
-      eveningResult = res.data.evening;
+    // ===== EVENING =====
+    if (scrapedEvening && scrapedEvening !== eveningResult) {
+      eveningResult = scrapedEvening;
       saveHistory("Evening", eveningResult);
 
       postAll(
 `🌆 Thai 2D Evening Result
+
 ⏰ ${now}
-🎯 ${eveningResult}`
+
+🎯 ${eveningResult}
+
+🧮 SET
+${genSet(eveningResult)}
+
+🔢 Formula
+${genFormula(eveningResult)}
+
+⚡ Power
+${genPower(eveningResult)}`
       );
     }
 
   } catch (err) {
-    console.log("API fetch error");
+    const t = Date.now();
+    if (t - lastScrapeErrorAt > 120000) {
+      lastScrapeErrorAt = t;
+      console.log("thaistock2d scrape error:", err.message);
+    }
   }
 }
 
-// ===== 30 SECONDS CHECK =====
+// ===== AUTO CHECK EVERY 30s =====
 setInterval(fetchThai2D, 30 * 1000);
+
+// ===== KEEP ALIVE (Render Free) =====
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end("Thai 2D Bot is running");
+}).listen(process.env.PORT || 3000);
