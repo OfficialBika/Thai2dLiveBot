@@ -1,6 +1,5 @@
 /**
- * Thai 2D Live + Final Bot (RAM only)
- * Source  : https://www.thaistock2d.com/
+ * Thai 2D Live + Final Bot (WEBHOOK VERSION)
  * Hosting : Render Free Web Service
  */
 
@@ -9,8 +8,16 @@ const axios = require("axios");
 const cheerio = require("cheerio");
 const http = require("http");
 
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
+const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
+const PORT = process.env.PORT || 3000;
+const WEBHOOK_PATH = "/webhook";
+const WEBHOOK_URL = `https://thai2dlivebot.onrender.com${WEBHOOK_PATH}`;
+
+const bot = new TelegramBot(BOT_TOKEN);
+
+// ===== SET WEBHOOK =====
+bot.setWebHook(WEBHOOK_URL);
 
 // ===== STATE =====
 let lastMorningLive = null;
@@ -113,7 +120,7 @@ async function postFinal(type, num, set, value) {
   lastPinnedMessageId = sent.message_id;
 }
 
-// ===== CORE SCRAPER =====
+// ===== SCRAPER =====
 async function fetchThai2D() {
   try {
     const res = await axios.get("https://www.thaistock2d.com/", {
@@ -140,7 +147,6 @@ async function fetchThai2D() {
     const morningNum = nums[0];
     const eveningNum = nums[1];
 
-    // ===== MORNING =====
     if (morningNum && isMorningWindow()) {
       if (!finalMorning && isFinalMoment("morning")) {
         finalMorning = morningNum;
@@ -151,7 +157,6 @@ async function fetchThai2D() {
       }
     }
 
-    // ===== EVENING =====
     if (eveningNum && isEveningWindow()) {
       if (!finalEvening && isFinalMoment("evening")) {
         finalEvening = eveningNum;
@@ -173,10 +178,23 @@ async function fetchThai2D() {
 // ===== LOOP =====
 setInterval(fetchThai2D, 30 * 1000);
 
-// ===== KEEP ALIVE =====
+// ===== HTTP SERVER (WEBHOOK) =====
 http
   .createServer((req, res) => {
-    res.writeHead(200);
-    res.end("Thai 2D Live Bot Running");
+    if (req.method === "POST" && req.url === WEBHOOK_PATH) {
+      let body = "";
+      req.on("data", chunk => (body += chunk));
+      req.on("end", () => {
+        try {
+          const update = JSON.parse(body);
+          bot.processUpdate(update);
+        } catch {}
+        res.writeHead(200);
+        res.end("OK");
+      });
+    } else {
+      res.writeHead(200);
+      res.end("Bot is running");
+    }
   })
-  .listen(process.env.PORT || 3000);
+  .listen(PORT);
