@@ -1,6 +1,7 @@
 /**
- * Myanmar 2D Live + Final Bot (REAL FINAL)
- * Hosting : Render Free (Webhook)
+ * Myanmar 2D Live + Final Bot
+ * Source : mylucky2d3d.com
+ * Hosting : Render Free (Webhook-less polling)
  */
 
 const TelegramBot = require("node-telegram-bot-api");
@@ -19,15 +20,15 @@ if (!BOT_TOKEN || !CHANNEL_ID) {
 
 const bot = new TelegramBot(BOT_TOKEN);
 
-/* =========================
-   🇲🇲 MYANMAR TIME (UTC+6:30)
-   ========================= */
-function getMMTDate() {
+/* =====================
+   🇲🇲 MYANMAR TIME
+   ===================== */
+function getMyanmarTime() {
   return new Date(Date.now() + 6.5 * 60 * 60 * 1000);
 }
 
-function getMyanmarPrettyDateTime() {
-  return getMMTDate()
+function prettyTime() {
+  return getMyanmarTime()
     .toLocaleString("en-US", {
       day: "2-digit",
       month: "short",
@@ -39,56 +40,42 @@ function getMyanmarPrettyDateTime() {
     .replace(",", " •");
 }
 
-/* =========================
+function minutesNow() {
+  const d = getMyanmarTime();
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+/* =====================
+   ⏰ TIME WINDOWS
+   ===================== */
+const MORNING_START = 11 * 60;
+const MORNING_END = 12 * 60 + 5;
+
+const EVENING_START = 15 * 60;
+const EVENING_END = 16 * 60 + 35;
+
+function isMorning() {
+  const m = minutesNow();
+  return m >= MORNING_START && m <= MORNING_END;
+}
+
+function isEvening() {
+  const m = minutesNow();
+  return m >= EVENING_START && m <= EVENING_END;
+}
+
+/* =====================
    📌 STATE
-   ========================= */
-let lastMorningLive = null;
-let lastEveningLive = null;
-let finalMorning = null;
-let finalEvening = null;
-let lastPinnedMessageId = null;
+   ===================== */
+let lastLive = null;
+let finalMorning = false;
+let finalEvening = false;
+let lastPinnedId = null;
 
-/* =========================
-   🤖 COMMANDS
-   ========================= */
-bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(
-    msg.chat.id,
-`🎯 Myanmar 2D Live Bot
-
-⏰ Market Time (Myanmar)
-🌅 Morning : 11:45 – Final
-🌆 Evening : 3:59 – Final
-
-🔴 Live numbers = Red dot
-✅ Final result = Check + Pin
-
-2D ဂဏန်း တိုက်ရိုက်ကြည့်ရန်
-Channel ကို join ပါ 👇`,
-    {
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "🔔 Join 2D Live Channel", url: "https://t.me/Live2DSet" }
-        ]]
-      }
-    }
-  );
-});
-
-// Debug test
-bot.onText(/\/testpost/, async (msg) => {
-  try {
-    await bot.sendMessage(CHANNEL_ID, "✅ Test post OK");
-    bot.sendMessage(msg.chat.id, "✅ Channel post OK");
-  } catch (e) {
-    bot.sendMessage(msg.chat.id, "❌ Channel post failed");
-  }
-});
-
-/* =========================
+/* =====================
    📤 POST HELPERS
-   ========================= */
-async function sendChannel(msg) {
+   ===================== */
+async function send(msg) {
   try {
     return await bot.sendMessage(CHANNEL_ID, msg, { parse_mode: "Markdown" });
   } catch (e) {
@@ -97,18 +84,24 @@ async function sendChannel(msg) {
   }
 }
 
-async function postLive(type, num) {
+async function postLive(type, num, set, value) {
   const label = type === "morning" ? "🌅 MORNING" : "🌆 EVENING";
 
   const msg =
 `╭───────────╮
 │ ${label} │
 ╰───────────╯
-📅 ${getMyanmarPrettyDateTime()}
+📅 ${prettyTime()}
 
-🎯 *Now 2D* : 🔴 *${num}*`;
+🎯 *Now 2D* : 🔴 *${num}*
 
-  await sendChannel(msg);
+📊 *SET*
+🟢 *${set}*
+
+💰 *VALUE*
+🔵 *${value}*`;
+
+  await send(msg);
 }
 
 async function postFinal(type, num, set, value) {
@@ -118,36 +111,36 @@ async function postFinal(type, num, set, value) {
 `╭───────────╮
 │ ${label} │
 ╰───────────╯
-📅 ${getMyanmarPrettyDateTime()}
+📅 ${prettyTime()}
 
 🎯 *Now 2D* : *${num}* ✅
 
 📊 *SET*
-🟢 *${set || "-"}*
+🟢 *${set}*
 
 💰 *VALUE*
-🔵 *${value || "-"}*`;
+🔵 *${value}*`;
 
-  const sent = await sendChannel(msg);
+  const sent = await send(msg);
   if (!sent) return;
 
   try {
-    if (lastPinnedMessageId) {
-      await bot.unpinChatMessage(CHANNEL_ID, lastPinnedMessageId);
+    if (lastPinnedId) {
+      await bot.unpinChatMessage(CHANNEL_ID, lastPinnedId);
     }
     await bot.pinChatMessage(CHANNEL_ID, sent.message_id, {
       disable_notification: true
     });
-    lastPinnedMessageId = sent.message_id;
+    lastPinnedId = sent.message_id;
   } catch {}
 }
 
-/* =========================
-   🌐 SCRAPER (thaistock2d.com)
-   ========================= */
-async function fetchThai2D() {
+/* =====================
+   🌐 SCRAPER
+   ===================== */
+async function fetch2D() {
   try {
-    const res = await axios.get("https://www.thaistock2d.com/", {
+    const res = await axios.get("https://mylucky2d3d.com/", {
       timeout: 15000,
       headers: {
         "User-Agent":
@@ -156,49 +149,62 @@ async function fetchThai2D() {
     });
 
     const $ = cheerio.load(res.data);
+
     const pageText = $("body").text();
 
-    // 🔴 LIVE = Big number (top)
-    const bigNum = pageText.match(/\b\d{2}\b/)?.[0];
+    // 🔴 LIVE BLOCK (big number + dynamic set/value)
+    const liveNum = pageText.match(/\b\d{2}\b/)?.[0];
+    const liveSet = pageText.match(/SET\s*([\d,.]+)/)?.[1];
+    const liveValue = pageText.match(/VALUE\s*([\d,.]+)/)?.[1];
 
-    // Final cards
-    function getFinal(timeLabel) {
+    // FINAL BLOCKS
+    function getFinal(label) {
       let block = null;
       $("div").each((_, el) => {
-        if ($(el).text().includes(timeLabel)) block = $(el);
+        if ($(el).text().includes(label)) block = $(el);
       });
       if (!block) return null;
 
       const text = block.text();
       return {
         num: text.match(/\b\d{2}\b/)?.[0],
-        set: text.match(/Set\s*([\d,.]+)/)?.[1],
-        value: text.match(/Value\s*([\d,.]+)/)?.[1]
+        set: text.match(/SET\s*([\d,.]+)/)?.[1],
+        value: text.match(/VALUE\s*([\d,.]+)/)?.[1]
       };
     }
 
-    const morningFinal = getFinal("12:01 PM");
-    const eveningFinal = getFinal("04:30 PM");
+    const morningFinal = getFinal("12:01");
+    const eveningFinal = getFinal("16:30");
 
     /* ===== MORNING ===== */
-    if (!finalMorning) {
+    if (isMorning() && !finalMorning) {
       if (morningFinal?.num) {
-        finalMorning = morningFinal.num;
+        finalMorning = true;
         await postFinal("morning", morningFinal.num, morningFinal.set, morningFinal.value);
-      } else if (bigNum && bigNum !== lastMorningLive) {
-        lastMorningLive = bigNum;
-        await postLive("morning", bigNum);
+      } else if (
+        liveNum &&
+        liveSet &&
+        liveValue &&
+        JSON.stringify({ liveNum, liveSet, liveValue }) !== lastLive
+      ) {
+        lastLive = JSON.stringify({ liveNum, liveSet, liveValue });
+        await postLive("morning", liveNum, liveSet, liveValue);
       }
     }
 
     /* ===== EVENING ===== */
-    if (finalMorning && !finalEvening) {
+    if (isEvening() && !finalEvening) {
       if (eveningFinal?.num) {
-        finalEvening = eveningFinal.num;
+        finalEvening = true;
         await postFinal("evening", eveningFinal.num, eveningFinal.set, eveningFinal.value);
-      } else if (bigNum && bigNum !== lastEveningLive) {
-        lastEveningLive = bigNum;
-        await postLive("evening", bigNum);
+      } else if (
+        liveNum &&
+        liveSet &&
+        liveValue &&
+        JSON.stringify({ liveNum, liveSet, liveValue }) !== lastLive
+      ) {
+        lastLive = JSON.stringify({ liveNum, liveSet, liveValue });
+        await postLive("evening", liveNum, liveSet, liveValue);
       }
     }
 
@@ -207,30 +213,18 @@ async function fetchThai2D() {
   }
 }
 
-/* =========================
+/* =====================
    🔁 LOOP
-   ========================= */
-setInterval(fetchThai2D, 30 * 1000);
+   ===================== */
+setInterval(fetch2D, 30 * 1000);
 
-/* =========================
-   🌐 WEBHOOK SERVER
-   ========================= */
+/* =====================
+   🌐 KEEP ALIVE
+   ===================== */
 http
-  .createServer((req, res) => {
-    if (req.method === "POST") {
-      let body = "";
-      req.on("data", (c) => (body += c));
-      req.on("end", () => {
-        try {
-          bot.processUpdate(JSON.parse(body));
-        } catch {}
-        res.writeHead(200);
-        res.end("OK");
-      });
-    } else {
-      res.writeHead(200);
-      res.end("Bot is running");
-    }
+  .createServer((_, res) => {
+    res.writeHead(200);
+    res.end("Bot running");
   })
   .listen(PORT, () => {
     console.log("✅ Bot running on port", PORT);
