@@ -1,6 +1,23 @@
 /**
- * Myanmar 2D Live + Final Bot (mylucky2d3d.com)
- * Hosting : Render Free Web Service (WEBHOOK)
+ * Myanmar 2D Live Bot — MYLUCKY2D3D API (WEBHOOK / Render)
+ * =======================================================
+ * ✅ Live updates via EDIT mode every 5s (no spam)
+ * ✅ Final result ✅ + Pin (ONLY when fiStatus === "yes")
+ * ✅ Modern/Internet separate posts (9:30 AM & 2:00 PM MMT) — NO PIN
+ * ✅ Single channel only
+ * ✅ Admin-only /forceam /forcepm
+ * ✅ Pulse indicator for “moving/fade-like” live feeling (Telegram-safe)
+ * ✅ Rate-limit (429) retry + robust error handling
+ *
+ * ENV (Render):
+ * - BOT_TOKEN   = Telegram Bot Token
+ * - CHANNEL_ID  = @YourChannelUsername OR -100xxxxxxxxxx
+ * - PUBLIC_URL  = https://your-app.onrender.com
+ * - ADMIN_ID    = your Telegram numeric ID (only admin can use /forceam /forcepm)
+ * Optional:
+ * - EDIT_EVERY_MS = 5000
+ * - LIVE_ENABLE_AM = 1 (default on)
+ * - LIVE_ENABLE_PM = 1 (default on)
  */
 
 const TelegramBot = require("node-telegram-bot-api");
@@ -8,35 +25,50 @@ const axios = require("axios");
 const cheerio = require("cheerio");
 const http = require("http");
 
+// ===== ENV =====
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
-const PORT = process.env.PORT || 3000;
+const PUBLIC_URL = process.env.PUBLIC_URL;
+const ADMIN_ID = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : null;
 
-const PUBLIC_URL = process.env.PUBLIC_URL; // e.g. https://thai2dlivebot.onrender.com
+const PORT = process.env.PORT || 3000;
 const WEBHOOK_PATH = "/webhook";
+const WEBHOOK_URL = `${String(PUBLIC_URL || "").replace(/\/$/, "")}${WEBHOOK_PATH}`;
+
+const EDIT_EVERY_MS = Number(process.env.EDIT_EVERY_MS || 5000);
+const LIVE_ENABLE_AM = process.env.LIVE_ENABLE_AM !== "0"; // default true
+const LIVE_ENABLE_PM = process.env.LIVE_ENABLE_PM !== "0"; // default true
 
 if (!BOT_TOKEN || !CHANNEL_ID || !PUBLIC_URL) {
-  console.error("❌ Missing ENV: BOT_TOKEN or CHANNEL_ID or PUBLIC_URL");
+  console.error("❌ Missing ENV. Required: BOT_TOKEN, CHANNEL_ID, PUBLIC_URL");
   process.exit(1);
 }
 
-const WEBHOOK_URL = `${PUBLIC_URL.replace(/\/$/, "")}${WEBHOOK_PATH}`;
-
-// ===== BOT (WEBHOOK MODE) =====
-const bot = new TelegramBot(BOT_TOKEN);
-bot.setWebHook(WEBHOOK_URL)
+// ===== BOT (WEBHOOK) =====
+const bot = new TelegramBot(BOT_TOKEN, { polling: false });
+bot
+  .setWebHook(WEBHOOK_URL)
   .then(() => console.log("✅ Webhook set:", WEBHOOK_URL))
   .catch((e) => console.error("❌ setWebHook error:", e.message));
 
-/* =====================
-   🇲🇲 MYANMAR TIME (UTC+6:30)
-   ===================== */
-function getMyanmarTime() {
-  return new Date(Date.now() + 6.5 * 60 * 60 * 1000);
-}
+// ===== API ENDPOINTS (from view-source) =====
+const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb"; // POST dateVal, periodVal(am/pm)
+const API_AM_REPORT = "https://mylucky2d3d.com/zusksbasqyfg/bpkhhthjpgve"; // POST dateVal (optional use)
+const API_WEEKLY = "https://mylucky2d3d.com/zusksbasqyfg/ypcydmlxbhfv"; // POST dateVal (optional use)
 
-function prettyTime() {
-  return getMyanmarTime()
+// ===== UTIL: Myanmar Time (Asia/Yangon) =====
+function nowMMTDateObj() {
+  return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
+}
+function ymdMMT() {
+  const d = nowMMTDateObj();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+function prettyMMT() {
+  return nowMMTDateObj()
     .toLocaleString("en-US", {
       day: "2-digit",
       month: "short",
@@ -47,261 +79,511 @@ function prettyTime() {
     })
     .replace(",", " •");
 }
-
-function minutesNow() {
-  const d = getMyanmarTime();
+function minutesNowMMT() {
+  const d = nowMMTDateObj();
   return d.getHours() * 60 + d.getMinutes();
 }
 
-/* =====================
-   ⏰ TIME WINDOWS (MMT)
-   ===================== */
-const MORNING_START = 11 * 60;        // 11:00
-const MORNING_END = 12 * 60 + 20;     // 12:20 buffer
-const EVENING_START = 15 * 60;        // 15:00
-const EVENING_END = 16 * 60 + 45;     // 16:45 buffer
-
-function isMorning() {
-  const m = minutesNow();
-  return m >= MORNING_START && m <= MORNING_END;
+// ===== TIME WINDOWS (MMT) =====
+// Morning live window: 11:45 – 12:02
+// Evening live window: 15:59 – 16:31
+function inMorningLiveWindow() {
+  const m = minutesNowMMT();
+  return m >= 11 * 60 + 45 && m <= 12 * 60 + 2;
+}
+function inEveningLiveWindow() {
+  const m = minutesNowMMT();
+  return m >= 15 * 60 + 59 && m <= 16 * 60 + 31;
 }
 
-function isEvening() {
-  const m = minutesNow();
-  return m >= EVENING_START && m <= EVENING_END;
+// Modern/Internet times (MMT): 9:30 AM and 2:00 PM
+function inWindow(h, min, windowMin = 2) {
+  const now = minutesNowMMT();
+  const t = h * 60 + min;
+  return now >= t && now <= t + windowMin;
 }
 
-/* =====================
-   📌 STATE
-   ===================== */
-let lastMorningLiveKey = null;
-let lastEveningLiveKey = null;
-let finalMorningDone = false;
-let finalEveningDone = false;
-let lastPinnedId = null;
+// ===== Pulse indicator (Telegram-safe “moving” effect) =====
+let pulseIdx = 0;
+function pulseDot() {
+  pulseIdx = (pulseIdx + 1) % 4;
+  return ["●", "◐", "◑", "○"][pulseIdx];
+}
 
-/* =====================
-   🤖 COMMANDS
-   ===================== */
-bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(
-    msg.chat.id,
-`🎯 Myanmar 2D Live Bot
-
-⏰ Market Time (Myanmar)
-🌅 Morning : 11:00 – Final
-🌆 Evening : 3:00 – Final
-
-🔴 Live numbers = Red dot
-✅ Final result = Check + Pin
-
-2D ဂဏန်း တိုက်ရိုက်ကြည့်ရန်
-Channel ကို join ပါ 👇`,
-    {
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "🔔 Join 2D Live Channel", url: "https://t.me/Live2DSet" }
-        ]]
-      }
-    }
-  );
-});
-
-bot.onText(/\/testpost|\/test/, async (msg) => {
+// ===== SAFE HELPERS (rate limit retry) =====
+async function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+function tgRetryAfterSeconds(err) {
+  const ra = err?.response?.body?.parameters?.retry_after;
+  return typeof ra === "number" ? ra : null;
+}
+async function safeSendMessage(chatId, text, opts = {}) {
   try {
-    await bot.sendMessage(CHANNEL_ID, "✅ Test post OK");
-    await bot.sendMessage(msg.chat.id, "✅ Channel post OK");
-  } catch {
-    await bot.sendMessage(msg.chat.id, "❌ Channel post failed");
-  }
-});
-
-bot.onText(/\/history/, async (msg) => {
-  await bot.sendMessage(msg.chat.id, "📊 History: (မထည့်သေးပါ) — လိုချင်ရင် DB ထည့်ပြီးရေးပေးမယ် ✅");
-});
-
-/* =====================
-   📤 POST HELPERS
-   ===================== */
-async function sendChannel(msg) {
-  try {
-    return await bot.sendMessage(CHANNEL_ID, msg, { parse_mode: "Markdown" });
+    return await bot.sendMessage(chatId, text, opts);
   } catch (e) {
-    console.error("Send error:", e.message);
+    const ra = tgRetryAfterSeconds(e);
+    if (ra) {
+      await sleep((ra + 1) * 1000);
+      return bot.sendMessage(chatId, text, opts);
+    }
+    throw e;
+  }
+}
+async function safeEditMessage(chatId, messageId, text, opts = {}) {
+  try {
+    return await bot.editMessageText(text, { chat_id: chatId, message_id: messageId, ...opts });
+  } catch (e) {
+    const ra = tgRetryAfterSeconds(e);
+    if (ra) {
+      await sleep((ra + 1) * 1000);
+      return bot.editMessageText(text, { chat_id: chatId, message_id: messageId, ...opts });
+    }
+    const desc = e?.response?.body?.description || "";
+    if (desc.includes("message is not modified")) return null;
+    throw e;
+  }
+}
+async function safePin(chatId, messageId) {
+  try {
+    return await bot.pinChatMessage(chatId, messageId, { disable_notification: true });
+  } catch (e) {
+    const ra = tgRetryAfterSeconds(e);
+    if (ra) {
+      await sleep((ra + 1) * 1000);
+      return bot.pinChatMessage(chatId, messageId, { disable_notification: true });
+    }
+    throw e;
+  }
+}
+async function safeUnpin(chatId, messageId) {
+  try {
+    return await bot.unpinChatMessage(chatId, messageId);
+  } catch {
     return null;
   }
 }
 
-async function postLive(type, num, set, value) {
-  const label = type === "morning" ? "🌅 MORNING" : "🌆 EVENING";
+// ===== API CALLS =====
+async function postForm(url, paramsObj) {
+  const form = new URLSearchParams();
+  for (const [k, v] of Object.entries(paramsObj)) form.append(k, String(v));
 
-  const msg =
-`╭───────────╮
-│ ${label} │
-╰───────────╯
-📅 ${prettyTime()}
-
-🎯 *Now 2D* : 🔴 *${num}*
-
-📊 *SET*
-🟢 *${set || "-"}*
-
-💰 *VALUE*
-🔵 *${value || "-"}*`;
-
-  await sendChannel(msg);
-}
-
-async function postFinal(type, num, set, value) {
-  const label = type === "morning" ? "🌅 MORNING" : "🌆 EVENING";
-
-  const msg =
-`╭───────────╮
-│ ${label} │
-╰───────────╯
-📅 ${prettyTime()}
-
-🎯 *Now 2D* : *${num}* ✅
-
-📊 *SET*
-🟢 *${set || "-"}*
-
-💰 *VALUE*
-🔵 *${value || "-"}*`;
-
-  const sent = await sendChannel(msg);
-  if (!sent) return;
-
-  try {
-    if (lastPinnedId) {
-      await bot.unpinChatMessage(CHANNEL_ID, lastPinnedId).catch(() => {});
+  const { data } = await axios.post(url, form, {
+    timeout: 15000,
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
     }
-    await bot.pinChatMessage(CHANNEL_ID, sent.message_id, {
-      disable_notification: true
-    });
-    lastPinnedId = sent.message_id;
-  } catch (e) {
-    console.error("Pin error:", e.message);
-  }
-}
-
-/* =====================
-   🌐 SCRAPER HELPERS
-   ===================== */
-function cleanText(s) {
-  return String(s || "").replace(/\s+/g, " ").trim();
-}
-
-/**
- * ✅ Live big number extraction for mylucky2d3d.com
- * We take the LAST 2-digit number right before "Updated:" line.
- * This avoids grabbing date "09" or time "12".
- */
-function extractLiveBig2D(pageText) {
-  const t = cleanText(pageText);
-  const idx = t.toLowerCase().indexOf("updated:");
-  if (idx === -1) return null;
-
-  const before = t.slice(0, idx).trim();
-  // take last 2-digit in this substring
-  const matches = before.match(/\b\d{2}\b/g);
-  if (!matches || !matches.length) return null;
-  return matches[matches.length - 1]; // ✅ usually 81
-}
-
-/**
- * Find card block containing time label like "12:01" or "16:30"
- * and parse num/set/value from that block.
- */
-function extractCardByTime($, timeLabel) {
-  let block = null;
-  $("div").each((_, el) => {
-    const txt = $(el).text();
-    if (txt && txt.includes(timeLabel)) block = $(el);
   });
-  if (!block) return null;
-
-  const text = cleanText(block.text());
-  const nums = text.match(/\b\d{2}\b/g);
-  const num = nums ? nums[nums.length - 1] : null; // safer: last 2-digit inside block
-  const set = text.match(/SET\s*([\d,.]+)/i)?.[1] || null;
-  const value = text.match(/VALUE\s*([\d,.]+)/i)?.[1] || null;
-
-  return { num, set, value };
+  return data;
 }
 
-/* =====================
-   🌐 MAIN FETCH
-   ===================== */
-async function fetch2D() {
-  try {
-    const res = await axios.get("https://mylucky2d3d.com/", {
-      timeout: 15000,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+/**
+ * Live AM/PM data:
+ * returns: { status, playSet, playValue, playLucky, playDtm, fiStatus }
+ */
+async function fetchLive(periodVal /* 'am'|'pm' */) {
+  const dateVal = ymdMMT();
+  return postForm(API_LIVE, { dateVal, periodVal });
+}
+
+// Optional (not required for core features)
+async function fetchAmReport() {
+  const dateVal = ymdMMT();
+  return postForm(API_AM_REPORT, { dateVal });
+}
+async function fetchWeekly() {
+  const dateVal = ymdMMT();
+  return postForm(API_WEEKLY, { dateVal });
+}
+
+// ===== MODERN/INTERNET (HTML scrape) =====
+async function fetchModernInternetBlocks() {
+  const res = await axios.get("https://mylucky2d3d.com/", {
+    timeout: 15000,
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+    }
+  });
+
+  const $ = cheerio.load(res.data);
+
+  function pickBlock(timeLabel) {
+    let block = null;
+    $(".feature-card").each((_, el) => {
+      const t = $(el).text().replace(/\s+/g, " ").trim();
+      if (t.includes(timeLabel) && t.includes("Modern") && t.includes("Internet")) {
+        block = $(el);
       }
     });
+    if (!block) return null;
 
-    const $ = cheerio.load(res.data);
-    const pageText = cleanText($("body").text());
+    const nums = [];
+    block.find(".modIntV").each((_, el) => {
+      const v = $(el).text().trim();
+      if (/^\d{2}$/.test(v)) nums.push(v);
+    });
 
-    // ✅ Live Big 2D (81)
-    const liveNum = extractLiveBig2D(pageText);
+    return {
+      time: timeLabel,
+      modern: nums[0] || "--",
+      internet: nums[1] || "--"
+    };
+  }
 
-    // ✅ Morning/Evening cards for SET/VALUE + Final detection
-    const morningCard = extractCardByTime($, "12:01"); // Morning final card block
-    const eveningCard = extractCardByTime($, "16:30"); // Evening final card block
+  return {
+    am930: pickBlock("9:30 AM"),
+    pm200: pickBlock("2:00 PM")
+  };
+}
 
-    // For LIVE set/value: use corresponding card (they can change during live as you said)
-    const morningLiveSet = morningCard?.set || null;
-    const morningLiveValue = morningCard?.value || null;
+// ===== MESSAGE FORMATTERS =====
+function liveMessageTemplate(label, liveNum, set, value, upd) {
+  const pulse = pulseDot();
+  return (
+`╭───────────╮
+│ ${label} │
+╰───────────╯
+📅 ${prettyMMT()}
 
-    const eveningLiveSet = eveningCard?.set || null;
-    const eveningLiveValue = eveningCard?.value || null;
+🎯 *Now 2D* : 🔴 *${liveNum || "--"}*
 
-    // ===== MORNING =====
-    if (isMorning() && !finalMorningDone) {
-      // Final morning: when 12:01 card has num+set+value
-      if (morningCard?.num && morningCard?.set && morningCard?.value) {
-        // If you want FINAL to trigger only near end, keep as is.
-        // This is safest: when card is fully populated.
-        finalMorningDone = true;
-        await postFinal("morning", morningCard.num, morningCard.set, morningCard.value);
-      } else if (liveNum) {
-        const key = `${liveNum}|${morningLiveSet || "-"}|${morningLiveValue || "-"}`;
-        if (key !== lastMorningLiveKey) {
-          lastMorningLiveKey = key;
-          await postLive("morning", liveNum, morningLiveSet, morningLiveValue);
-        }
-      }
-    }
+📊 *SET*
+🟢 *${set || "--"}*
 
-    // ===== EVENING =====
-    if (isEvening() && !finalEveningDone) {
-      if (eveningCard?.num && eveningCard?.set && eveningCard?.value && eveningCard.num !== "--") {
-        finalEveningDone = true;
-        await postFinal("evening", eveningCard.num, eveningCard.set, eveningCard.value);
-      } else if (liveNum) {
-        const key = `${liveNum}|${eveningLiveSet || "-"}|${eveningLiveValue || "-"}`;
-        if (key !== lastEveningLiveKey) {
-          lastEveningLiveKey = key;
-          await postLive("evening", liveNum, eveningLiveSet, eveningLiveValue);
-        }
-      }
-    }
+💰 *VALUE*
+🔵 *${value || "--"}*
 
-  } catch (e) {
-    console.error("Scrape error:", e.message);
+${pulse} Live updating
+🕒 Updated: *${upd || "--"}*`
+  );
+}
+
+function finalMessageTemplate(label, finalNum, set, value, upd) {
+  return (
+`╭───────────╮
+│ ${label} │
+╰───────────╯
+📅 ${prettyMMT()}
+
+🎯 *Now 2D* : *${finalNum || "--"}* ✅
+
+📊 *SET*
+🟢 *${set || "--"}*
+
+💰 *VALUE*
+🔵 *${value || "--"}*
+
+🕒 Updated: *${upd || "--"}*`
+  );
+}
+
+function modIntTemplate(timeTitle, modern, internet) {
+  return (
+`╭──────────────╮
+│ 🧠 MODERN / INTERNET │
+╰──────────────╯
+📅 ${prettyMMT()}
+
+${timeTitle}
+🟢 *Modern* : *${modern || "--"}*
+🔵 *Internet* : *${internet || "--"}*`
+  );
+}
+
+// ===== STATE (per day) =====
+let stateDate = ymdMMT();
+
+// live edit message ids
+let liveMsgIdAM = null;
+let liveMsgIdPM = null;
+
+// pinned final ids
+let pinnedFinalIdAM = null;
+let pinnedFinalIdPM = null;
+
+// daily Mod/Int post lock
+let lastPostedModIntMorningDate = null;
+let lastPostedModIntEveningDate = null;
+
+// final posted flags (per day)
+let finalDoneAM = false;
+let finalDonePM = false;
+
+// change detection to reduce edits
+let lastKeyAM = null;
+let lastKeyPM = null;
+
+// ===== DAILY RESET =====
+function resetDailyStateIfNeeded() {
+  const today = ymdMMT();
+  if (today !== stateDate) {
+    stateDate = today;
+
+    liveMsgIdAM = null;
+    liveMsgIdPM = null;
+
+    pinnedFinalIdAM = null;
+    pinnedFinalIdPM = null;
+
+    lastPostedModIntMorningDate = null;
+    lastPostedModIntEveningDate = null;
+
+    finalDoneAM = false;
+    finalDonePM = false;
+
+    lastKeyAM = null;
+    lastKeyPM = null;
+
+    console.log("✅ Daily state reset:", stateDate);
   }
 }
 
-// ===== LOOP (30s) =====
-setInterval(fetch2D, 30 * 1000);
+// ===== LIVE EDIT FLOW =====
+async function upsertLive(period, data) {
+  const isAM = period === "am";
+  const label = isAM ? "🌅 MORNING" : "🌆 EVENING";
 
-/* =====================
-   🌐 HTTP SERVER (Webhook Receiver)
-   ===================== */
+  const key = `${data.playLucky}|${data.playSet}|${data.playValue}|${data.playDtm}|${data.fiStatus}`;
+  if (isAM && key === lastKeyAM) return;
+  if (!isAM && key === lastKeyPM) return;
+
+  const text = liveMessageTemplate(label, data.playLucky, data.playSet, data.playValue, data.playDtm);
+  const opts = { parse_mode: "Markdown" };
+
+  if (isAM) {
+    if (!liveMsgIdAM) {
+      const sent = await safeSendMessage(CHANNEL_ID, text, opts);
+      liveMsgIdAM = sent.message_id;
+    } else {
+      await safeEditMessage(CHANNEL_ID, liveMsgIdAM, text, opts);
+    }
+    lastKeyAM = key;
+  } else {
+    if (!liveMsgIdPM) {
+      const sent = await safeSendMessage(CHANNEL_ID, text, opts);
+      liveMsgIdPM = sent.message_id;
+    } else {
+      await safeEditMessage(CHANNEL_ID, liveMsgIdPM, text, opts);
+    }
+    lastKeyPM = key;
+  }
+}
+
+async function postFinal(period, data) {
+  const isAM = period === "am";
+  const label = isAM ? "🌅 MORNING" : "🌆 EVENING";
+
+  const text = finalMessageTemplate(label, data.playLucky, data.playSet, data.playValue, data.playDtm);
+  const opts = { parse_mode: "Markdown" };
+
+  const sent = await safeSendMessage(CHANNEL_ID, text, opts);
+
+  // unpin previous final for this period only
+  if (isAM && pinnedFinalIdAM) await safeUnpin(CHANNEL_ID, pinnedFinalIdAM);
+  if (!isAM && pinnedFinalIdPM) await safeUnpin(CHANNEL_ID, pinnedFinalIdPM);
+
+  // pin this final
+  await safePin(CHANNEL_ID, sent.message_id);
+
+  if (isAM) pinnedFinalIdAM = sent.message_id;
+  else pinnedFinalIdPM = sent.message_id;
+
+  // stop editing further for that period today
+  if (isAM) finalDoneAM = true;
+  else finalDonePM = true;
+}
+
+// ===== MODERN/INTERNET DAILY POSTS (NO PIN) =====
+async function postModInt(type /* morning|evening */) {
+  const today = ymdMMT();
+  if (type === "morning" && lastPostedModIntMorningDate === today) return;
+  if (type === "evening" && lastPostedModIntEveningDate === today) return;
+
+  const blocks = await fetchModernInternetBlocks();
+  const block = type === "morning" ? blocks?.am930 : blocks?.pm200;
+  if (!block) return;
+
+  const title = type === "morning" ? "🕤 *9:30 AM*" : "🕑 *2:00 PM*";
+  const msg = modIntTemplate(title, block.modern, block.internet);
+
+  await safeSendMessage(CHANNEL_ID, msg, { parse_mode: "Markdown" });
+
+  if (type === "morning") lastPostedModIntMorningDate = today;
+  else lastPostedModIntEveningDate = today;
+}
+
+// ===== MAIN TICKS =====
+async function tickLive() {
+  resetDailyStateIfNeeded();
+
+  // Morning live
+  if (LIVE_ENABLE_AM && inMorningLiveWindow() && !finalDoneAM) {
+    const data = await fetchLive("am").catch(() => null);
+    if (data && data.status === "success") {
+      if (data.fiStatus === "yes") {
+        await postFinal("am", data);
+      } else {
+        await upsertLive("am", data);
+      }
+    }
+  }
+
+  // Evening live
+  if (LIVE_ENABLE_PM && inEveningLiveWindow() && !finalDonePM) {
+    const data = await fetchLive("pm").catch(() => null);
+    if (data && data.status === "success") {
+      if (data.fiStatus === "yes") {
+        await postFinal("pm", data);
+      } else {
+        await upsertLive("pm", data);
+      }
+    }
+  }
+}
+
+async function tickModInt() {
+  resetDailyStateIfNeeded();
+
+  // Morning 9:30 AM (9:30–9:32)
+  if (inWindow(9, 30, 2)) {
+    await postModInt("morning").catch(() => null);
+  }
+
+  // Evening 2:00 PM (14:00–14:02)
+  if (inWindow(14, 0, 2)) {
+    await postModInt("evening").catch(() => null);
+  }
+}
+
+// Start loops
+setInterval(() => {
+  tickLive().catch((e) => console.log("Live tick error:", e.message));
+}, EDIT_EVERY_MS);
+
+setInterval(() => {
+  tickModInt().catch((e) => console.log("ModInt tick error:", e.message));
+}, 20 * 1000);
+
+// ===== ADMIN HELPERS =====
+function isAdmin(msg) {
+  if (!ADMIN_ID) return false;
+  return msg?.from?.id === ADMIN_ID;
+}
+async function denyNotAdmin(chatId) {
+  return safeSendMessage(chatId, "⛔ ဒီ command ကို Admin ပဲသုံးလို့ရပါတယ်။");
+}
+
+// ===== COMMANDS =====
+bot.onText(/\/start/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  const text =
+`🎯 Myanmar 2D Live Bot
+
+⏰ Market Time (Myanmar)
+🌅 Morning : 11:45 – 12:02
+🌆 Evening : 3:59 – 4:31
+
+🔴 Live numbers = Red dot (Edit mode)
+✅ Final result = Check + Pin (Only final)
+
+🧠 Modern/Internet (Separate posts)
+🕤 9:30 AM  •  🕑 2:00 PM
+
+2D ဂဏန်း တိုက်ရိုက်ကြည့်ရန်
+Channel ကို join ပါ 👇`;
+
+  await safeSendMessage(chatId, text, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "🔔 Join 2D Live Channel", url: "https://t.me/Live2DSet" }]
+      ]
+    }
+  });
+});
+
+bot.onText(/\/test/, async (msg) => {
+  try {
+    await safeSendMessage(CHANNEL_ID, "✅ Test post OK (channel)");
+    await safeSendMessage(msg.chat.id, "✅ Test post sent to channel");
+  } catch (e) {
+    await safeSendMessage(msg.chat.id, `❌ Test failed: ${e.message}`);
+  }
+});
+
+bot.onText(/\/status/, async (msg) => {
+  const s =
+`📌 Bot Status
+📅 Date (MMT): ${ymdMMT()}
+⏱ Edit interval: ${EDIT_EVERY_MS}ms
+
+🌅 Morning live msg: ${liveMsgIdAM ? "YES" : "NO"}
+🌆 Evening live msg: ${liveMsgIdPM ? "YES" : "NO"}
+
+✅ Final AM posted: ${finalDoneAM ? "YES" : "NO"}
+✅ Final PM posted: ${finalDonePM ? "YES" : "NO"}
+
+🧠 Admin ID set: ${ADMIN_ID ? "YES" : "NO"}`;
+
+  await safeSendMessage(msg.chat.id, s);
+});
+
+// Admin-only: Force fetch + update (without time window)
+bot.onText(/\/forceam/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(msg)) return denyNotAdmin(chatId);
+
+  try {
+    const data = await fetchLive("am");
+    if (!data || data.status !== "success") {
+      return safeSendMessage(chatId, `⚠️ AM fetch မရပါ (status: ${data?.status || "unknown"})`);
+    }
+
+    if (data.fiStatus === "yes") {
+      await postFinal("am", data);
+      return safeSendMessage(chatId, "✅ /forceam → Final posted + pinned");
+    } else {
+      await upsertLive("am", data);
+      return safeSendMessage(chatId, "✅ /forceam → Live updated (edit mode)");
+    }
+  } catch (e) {
+    return safeSendMessage(chatId, `❌ /forceam error: ${e.message}`);
+  }
+});
+
+bot.onText(/\/forcepm/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(msg)) return denyNotAdmin(chatId);
+
+  try {
+    const data = await fetchLive("pm");
+    if (!data || data.status !== "success") {
+      return safeSendMessage(chatId, `⚠️ PM fetch မရပါ (status: ${data?.status || "unknown"})`);
+    }
+
+    if (data.fiStatus === "yes") {
+      await postFinal("pm", data);
+      return safeSendMessage(chatId, "✅ /forcepm → Final posted + pinned");
+    } else {
+      await upsertLive("pm", data);
+      return safeSendMessage(chatId, "✅ /forcepm → Live updated (edit mode)");
+    }
+  } catch (e) {
+    return safeSendMessage(chatId, `❌ /forcepm error: ${e.message}`);
+  }
+});
+
+// Optional: show your Telegram ID (admin can use to confirm)
+bot.onText(/\/myid/, async (msg) => {
+  const chatId = msg.chat.id;
+  await safeSendMessage(chatId, `🆔 Your Telegram ID: ${msg.from.id}`);
+});
+
+// ===== HTTP SERVER (Webhook Receiver) =====
 http
   .createServer((req, res) => {
     if (req.method === "POST" && req.url === WEBHOOK_PATH) {
@@ -322,3 +604,4 @@ http
     res.end("Bot is running");
   })
   .listen(PORT, () => console.log("✅ Server running on port", PORT));
+
