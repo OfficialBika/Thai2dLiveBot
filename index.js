@@ -12,7 +12,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const PORT = process.env.PORT || 3000;
 
-const PUBLIC_URL = process.env.PUBLIC_URL; // ✅ REQUIRED for webhook
+const PUBLIC_URL = process.env.PUBLIC_URL; // e.g. https://thai2dlivebot.onrender.com
 const WEBHOOK_PATH = "/webhook";
 
 if (!BOT_TOKEN || !CHANNEL_ID || !PUBLIC_URL) {
@@ -24,11 +24,9 @@ const WEBHOOK_URL = `${PUBLIC_URL.replace(/\/$/, "")}${WEBHOOK_PATH}`;
 
 // ===== BOT (WEBHOOK MODE) =====
 const bot = new TelegramBot(BOT_TOKEN);
-bot.setWebHook(WEBHOOK_URL).then(() => {
-  console.log("✅ Webhook set:", WEBHOOK_URL);
-}).catch((e) => {
-  console.error("❌ setWebHook error:", e.message);
-});
+bot.setWebHook(WEBHOOK_URL)
+  .then(() => console.log("✅ Webhook set:", WEBHOOK_URL))
+  .catch((e) => console.error("❌ setWebHook error:", e.message));
 
 /* =====================
    🇲🇲 MYANMAR TIME (UTC+6:30)
@@ -59,9 +57,9 @@ function minutesNow() {
    ⏰ TIME WINDOWS (MMT)
    ===================== */
 const MORNING_START = 11 * 60;        // 11:00
-const MORNING_END = 12 * 60 + 20;     // 12:20 (buffer)
+const MORNING_END = 12 * 60 + 20;     // 12:20 buffer
 const EVENING_START = 15 * 60;        // 15:00
-const EVENING_END = 16 * 60 + 45;     // 16:45 (buffer)
+const EVENING_END = 16 * 60 + 45;     // 16:45 buffer
 
 function isMorning() {
   const m = minutesNow();
@@ -109,16 +107,15 @@ Channel ကို join ပါ 👇`,
   );
 });
 
-bot.onText(/\/test/, async (msg) => {
+bot.onText(/\/testpost|\/test/, async (msg) => {
   try {
     await bot.sendMessage(CHANNEL_ID, "✅ Test post OK");
     await bot.sendMessage(msg.chat.id, "✅ Channel post OK");
-  } catch (e) {
+  } catch {
     await bot.sendMessage(msg.chat.id, "❌ Channel post failed");
   }
 });
 
-// placeholder (မင်းလိုချင်ရင် history DB ထည့်မယ်)
 bot.onText(/\/history/, async (msg) => {
   await bot.sendMessage(msg.chat.id, "📊 History: (မထည့်သေးပါ) — လိုချင်ရင် DB ထည့်ပြီးရေးပေးမယ် ✅");
 });
@@ -137,6 +134,7 @@ async function sendChannel(msg) {
 
 async function postLive(type, num, set, value) {
   const label = type === "morning" ? "🌅 MORNING" : "🌆 EVENING";
+
   const msg =
 `╭───────────╮
 │ ${label} │
@@ -156,6 +154,7 @@ async function postLive(type, num, set, value) {
 
 async function postFinal(type, num, set, value) {
   const label = type === "morning" ? "🌅 MORNING" : "🌆 EVENING";
+
   const msg =
 `╭───────────╮
 │ ${label} │
@@ -187,36 +186,53 @@ async function postFinal(type, num, set, value) {
 }
 
 /* =====================
-   🌐 SCRAPER (mylucky2d3d.com)
+   🌐 SCRAPER HELPERS
    ===================== */
-function pickFirstTwoDigit(text) {
-  const m = text.match(/\b\d{2}\b/);
-  return m ? m[0] : null;
+function cleanText(s) {
+  return String(s || "").replace(/\s+/g, " ").trim();
 }
 
-function extractLiveSetValue(text) {
-  const set = text.match(/SET\s*([\d,.]+)/i)?.[1] || null;
-  const value = text.match(/VALUE\s*([\d,.]+)/i)?.[1] || null;
-  return { set, value };
+/**
+ * ✅ Live big number extraction for mylucky2d3d.com
+ * We take the LAST 2-digit number right before "Updated:" line.
+ * This avoids grabbing date "09" or time "12".
+ */
+function extractLiveBig2D(pageText) {
+  const t = cleanText(pageText);
+  const idx = t.toLowerCase().indexOf("updated:");
+  if (idx === -1) return null;
+
+  const before = t.slice(0, idx).trim();
+  // take last 2-digit in this substring
+  const matches = before.match(/\b\d{2}\b/g);
+  if (!matches || !matches.length) return null;
+  return matches[matches.length - 1]; // ✅ usually 81
 }
 
+/**
+ * Find card block containing time label like "12:01" or "16:30"
+ * and parse num/set/value from that block.
+ */
 function extractCardByTime($, timeLabel) {
-  // Find a container that includes the timeLabel, then parse inside it
   let block = null;
   $("div").each((_, el) => {
-    const t = $(el).text();
-    if (t && t.includes(timeLabel)) block = $(el);
+    const txt = $(el).text();
+    if (txt && txt.includes(timeLabel)) block = $(el);
   });
   if (!block) return null;
 
-  const t = block.text();
-  return {
-    num: pickFirstTwoDigit(t),
-    set: t.match(/SET\s*([\d,.]+)/i)?.[1] || null,
-    value: t.match(/VALUE\s*([\d,.]+)/i)?.[1] || null
-  };
+  const text = cleanText(block.text());
+  const nums = text.match(/\b\d{2}\b/g);
+  const num = nums ? nums[nums.length - 1] : null; // safer: last 2-digit inside block
+  const set = text.match(/SET\s*([\d,.]+)/i)?.[1] || null;
+  const value = text.match(/VALUE\s*([\d,.]+)/i)?.[1] || null;
+
+  return { num, set, value };
 }
 
+/* =====================
+   🌐 MAIN FETCH
+   ===================== */
 async function fetch2D() {
   try {
     const res = await axios.get("https://mylucky2d3d.com/", {
@@ -228,43 +244,53 @@ async function fetch2D() {
     });
 
     const $ = cheerio.load(res.data);
-    const pageText = $("body").text().replace(/\s+/g, " ").trim();
+    const pageText = cleanText($("body").text());
 
-    // LIVE = big number area (first 2-digit in page) + SET/VALUE (also in page)
-    const liveNum = pickFirstTwoDigit(pageText);
-    const { set: liveSet, value: liveValue } = extractLiveSetValue(pageText);
+    // ✅ Live Big 2D (81)
+    const liveNum = extractLiveBig2D(pageText);
 
-    // Final cards
-    const morningFinal = extractCardByTime($, "12:01");
-    const eveningFinal = extractCardByTime($, "16:30");
+    // ✅ Morning/Evening cards for SET/VALUE + Final detection
+    const morningCard = extractCardByTime($, "12:01"); // Morning final card block
+    const eveningCard = extractCardByTime($, "16:30"); // Evening final card block
+
+    // For LIVE set/value: use corresponding card (they can change during live as you said)
+    const morningLiveSet = morningCard?.set || null;
+    const morningLiveValue = morningCard?.value || null;
+
+    const eveningLiveSet = eveningCard?.set || null;
+    const eveningLiveValue = eveningCard?.value || null;
 
     // ===== MORNING =====
     if (isMorning() && !finalMorningDone) {
-      if (morningFinal?.num && morningFinal.set && morningFinal.value) {
+      // Final morning: when 12:01 card has num+set+value
+      if (morningCard?.num && morningCard?.set && morningCard?.value) {
+        // If you want FINAL to trigger only near end, keep as is.
+        // This is safest: when card is fully populated.
         finalMorningDone = true;
-        await postFinal("morning", morningFinal.num, morningFinal.set, morningFinal.value);
-      } else if (liveNum && liveSet && liveValue) {
-        const key = `${liveNum}|${liveSet}|${liveValue}`;
+        await postFinal("morning", morningCard.num, morningCard.set, morningCard.value);
+      } else if (liveNum) {
+        const key = `${liveNum}|${morningLiveSet || "-"}|${morningLiveValue || "-"}`;
         if (key !== lastMorningLiveKey) {
           lastMorningLiveKey = key;
-          await postLive("morning", liveNum, liveSet, liveValue);
+          await postLive("morning", liveNum, morningLiveSet, morningLiveValue);
         }
       }
     }
 
     // ===== EVENING =====
     if (isEvening() && !finalEveningDone) {
-      if (eveningFinal?.num && eveningFinal.set && eveningFinal.value) {
+      if (eveningCard?.num && eveningCard?.set && eveningCard?.value && eveningCard.num !== "--") {
         finalEveningDone = true;
-        await postFinal("evening", eveningFinal.num, eveningFinal.set, eveningFinal.value);
-      } else if (liveNum && liveSet && liveValue) {
-        const key = `${liveNum}|${liveSet}|${liveValue}`;
+        await postFinal("evening", eveningCard.num, eveningCard.set, eveningCard.value);
+      } else if (liveNum) {
+        const key = `${liveNum}|${eveningLiveSet || "-"}|${eveningLiveValue || "-"}`;
         if (key !== lastEveningLiveKey) {
           lastEveningLiveKey = key;
-          await postLive("evening", liveNum, liveSet, liveValue);
+          await postLive("evening", liveNum, eveningLiveSet, eveningLiveValue);
         }
       }
     }
+
   } catch (e) {
     console.error("Scrape error:", e.message);
   }
@@ -284,7 +310,7 @@ http
       req.on("end", () => {
         try {
           const update = JSON.parse(body);
-          bot.processUpdate(update); // ✅ THIS IS WHY COMMANDS WORK
+          bot.processUpdate(update);
         } catch {}
         res.writeHead(200);
         res.end("OK");
