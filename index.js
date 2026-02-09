@@ -1,5 +1,5 @@
 /**
- * Thai 2D Live + Final Bot (WEBHOOK VERSION)
+ * Thai 2D Live + Final Bot (WEBHOOK – FIXED)
  * Hosting : Render Free Web Service
  */
 
@@ -11,44 +11,13 @@ const http = require("http");
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const PORT = process.env.PORT || 3000;
-const WEBHOOK_PATH = "/webhook";
-const WEBHOOK_URL = `https://thai2dlivebot.onrender.com${WEBHOOK_PATH}`;
+
+if (!BOT_TOKEN || !CHANNEL_ID) {
+  console.error("❌ BOT_TOKEN or CHANNEL_ID missing");
+  process.exit(1);
+}
 
 const bot = new TelegramBot(BOT_TOKEN);
-
-// ===== SET WEBHOOK =====
-bot.setWebHook(WEBHOOK_URL);
-
-bot.onText(/\/start/, (msg) => {
-  const chatId = msg.chat.id;
-
-  bot.sendMessage(
-    chatId,
-`🎯 Myanmar 2D Live Bot
-
-⏰ Market Time (Myanmar)
-🌅 Morning : 11:45 – 12:02
-🌆 Evening : 3:59 – 4:31
-
-🔴 Live numbers = Red dot
-✅ Final result = Check + Pin
-
-2D ဂဏန်း တိုက်ရိုက်ကြည့်ရန်
-Channel ကို join ပါ 👇`,
-    {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: "🔔 Join 2D Live Channel",
-              url: "https://t.me/Live2DSet"
-            }
-          ]
-        ]
-      }
-    }
-  );
-});
 
 // ===== STATE =====
 let lastMorningLive = null;
@@ -98,7 +67,52 @@ function isFinalMoment(type) {
   return false;
 }
 
+// ===== COMMANDS =====
+bot.onText(/\/start/, (msg) => {
+  bot.sendMessage(
+    msg.chat.id,
+`🎯 Myanmar 2D Live Bot
+
+⏰ Market Time (Myanmar)
+🌅 Morning : 11:45 – 12:02
+🌆 Evening : 3:59 – 4:31
+
+🔴 Live numbers = Red dot
+✅ Final result = Check + Pin
+
+2D ဂဏန်း တိုက်ရိုက်ကြည့်ရန်
+Channel ကို join ပါ 👇`,
+    {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "🔔 Join 2D Live Channel", url: "https://t.me/Live2DSet" }
+        ]]
+      }
+    }
+  );
+});
+
+// 👉 DEBUG TEST (အရမ်းအရေးကြီး)
+bot.onText(/\/testpost/, async (msg) => {
+  try {
+    await bot.sendMessage(CHANNEL_ID, "✅ Test post OK");
+    bot.sendMessage(msg.chat.id, "✅ Channel post OK");
+  } catch (e) {
+    bot.sendMessage(msg.chat.id, "❌ Channel post failed");
+    console.error("Channel post error:", e.message);
+  }
+});
+
 // ===== POST HELPERS =====
+async function safeSendChannel(msg) {
+  try {
+    return await bot.sendMessage(CHANNEL_ID, msg, { parse_mode: "Markdown" });
+  } catch (e) {
+    console.error("❌ sendMessage error:", e.message);
+    return null;
+  }
+}
+
 async function postLive(type, num, set, value) {
   const label = type === "morning" ? "🌅 MORNING" : "🌆 EVENING";
 
@@ -111,12 +125,12 @@ async function postLive(type, num, set, value) {
 🎯 *Now 2D* : 🔴 *${num}*
 
 📊 *SET*
-🟢 *${set}*
+🟢 *${set || "-"}*
 
 💰 *VALUE*
-🔵 *${value}*`;
+🔵 *${value || "-"}*`;
 
-  await bot.sendMessage(CHANNEL_ID, msg, { parse_mode: "Markdown" });
+  await safeSendChannel(msg);
 }
 
 async function postFinal(type, num, set, value) {
@@ -131,24 +145,25 @@ async function postFinal(type, num, set, value) {
 🎯 *Now 2D* : *${num}* ✅
 
 📊 *SET*
-🟢 *${set}*
+🟢 *${set || "-"}*
 
 💰 *VALUE*
-🔵 *${value}*`;
+🔵 *${value || "-"}*`;
 
-  const sent = await bot.sendMessage(CHANNEL_ID, msg, {
-    parse_mode: "Markdown"
-  });
+  const sent = await safeSendChannel(msg);
+  if (!sent) return;
 
-  if (lastPinnedMessageId) {
-    await bot.unpinChatMessage(CHANNEL_ID, lastPinnedMessageId).catch(() => {});
+  try {
+    if (lastPinnedMessageId) {
+      await bot.unpinChatMessage(CHANNEL_ID, lastPinnedMessageId);
+    }
+    await bot.pinChatMessage(CHANNEL_ID, sent.message_id, {
+      disable_notification: true
+    });
+    lastPinnedMessageId = sent.message_id;
+  } catch (e) {
+    console.error("❌ pin error:", e.message);
   }
-
-  await bot.pinChatMessage(CHANNEL_ID, sent.message_id, {
-    disable_notification: true
-  });
-
-  lastPinnedMessageId = sent.message_id;
 }
 
 // ===== SCRAPER =====
@@ -201,7 +216,7 @@ async function fetchThai2D() {
     const t = Date.now();
     if (t - lastErrorAt > 120000) {
       lastErrorAt = t;
-      console.log("Scrape error:", e.message);
+      console.error("Scrape error:", e.message);
     }
   }
 }
@@ -209,16 +224,15 @@ async function fetchThai2D() {
 // ===== LOOP =====
 setInterval(fetchThai2D, 30 * 1000);
 
-// ===== HTTP SERVER (WEBHOOK) =====
+// ===== HTTP SERVER + WEBHOOK =====
 http
   .createServer((req, res) => {
-    if (req.method === "POST" && req.url === WEBHOOK_PATH) {
+    if (req.method === "POST") {
       let body = "";
       req.on("data", chunk => (body += chunk));
       req.on("end", () => {
         try {
-          const update = JSON.parse(body);
-          bot.processUpdate(update);
+          bot.processUpdate(JSON.parse(body));
         } catch {}
         res.writeHead(200);
         res.end("OK");
@@ -228,4 +242,6 @@ http
       res.end("Bot is running");
     }
   })
-  .listen(PORT);
+  .listen(PORT, () => {
+    console.log("✅ Server running on port", PORT);
+  });
