@@ -1,5 +1,5 @@
 /**
- * Thai 2D Live + Final Bot (WEBHOOK – FIXED)
+ * Myanmar 2D Live + Final Bot (WEBHOOK – FINAL FIX)
  * Hosting : Render Free Web Service
  */
 
@@ -19,19 +19,23 @@ if (!BOT_TOKEN || !CHANNEL_ID) {
 
 const bot = new TelegramBot(BOT_TOKEN);
 
-// ===== STATE =====
-let lastMorningLive = null;
-let lastEveningLive = null;
-let finalMorning = null;
-let finalEvening = null;
-let lastPinnedMessageId = null;
-let lastErrorAt = 0;
+/* =========================
+   🇲🇲 MYANMAR TIME (UTC+6:30)
+   ========================= */
+function getMMTDate() {
+  const now = new Date();
+  return new Date(now.getTime() + 6.5 * 60 * 60 * 1000);
+}
 
-// ===== TIME (MYANMAR) =====
+function minutesNowMMT() {
+  const d = getMMTDate();
+  return d.getHours() * 60 + d.getMinutes();
+}
+
 function getMyanmarPrettyDateTime() {
-  return new Date()
+  const d = getMMTDate();
+  return d
     .toLocaleString("en-US", {
-      timeZone: "Asia/Yangon",
       day: "2-digit",
       month: "short",
       year: "numeric",
@@ -42,14 +46,9 @@ function getMyanmarPrettyDateTime() {
     .replace(",", " •");
 }
 
-function minutesNowMMT() {
-  const d = new Date(
-    new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" })
-  );
-  return d.getHours() * 60 + d.getMinutes();
-}
-
-// ===== TIME WINDOWS =====
+/* =========================
+   ⏰ TIME WINDOWS
+   ========================= */
 function isMorningWindow() {
   const m = minutesNowMMT();
   return m >= 11 * 60 + 45 && m <= 12 * 60 + 2;
@@ -67,7 +66,19 @@ function isFinalMoment(type) {
   return false;
 }
 
-// ===== COMMANDS =====
+/* =========================
+   📌 STATE
+   ========================= */
+let lastMorningLive = null;
+let lastEveningLive = null;
+let finalMorning = null;
+let finalEvening = null;
+let lastPinnedMessageId = null;
+let lastErrorAt = 0;
+
+/* =========================
+   🤖 COMMANDS
+   ========================= */
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(
     msg.chat.id,
@@ -92,18 +103,20 @@ Channel ကို join ပါ 👇`,
   );
 });
 
-// 👉 DEBUG TEST (အရမ်းအရေးကြီး)
+// debug (လိုအပ်ရင်သာ သုံး)
 bot.onText(/\/testpost/, async (msg) => {
   try {
     await bot.sendMessage(CHANNEL_ID, "✅ Test post OK");
     bot.sendMessage(msg.chat.id, "✅ Channel post OK");
   } catch (e) {
     bot.sendMessage(msg.chat.id, "❌ Channel post failed");
-    console.error("Channel post error:", e.message);
+    console.error("Channel error:", e.message);
   }
 });
 
-// ===== POST HELPERS =====
+/* =========================
+   📤 POST HELPERS
+   ========================= */
 async function safeSendChannel(msg) {
   try {
     return await bot.sendMessage(CHANNEL_ID, msg, { parse_mode: "Markdown" });
@@ -166,7 +179,9 @@ async function postFinal(type, num, set, value) {
   }
 }
 
-// ===== SCRAPER =====
+/* =========================
+   🌐 SCRAPER
+   ========================= */
 async function fetchThai2D() {
   try {
     const res = await axios.get("https://www.thaistock2d.com/", {
@@ -221,15 +236,19 @@ async function fetchThai2D() {
   }
 }
 
-// ===== LOOP =====
+/* =========================
+   🔁 LOOP
+   ========================= */
 setInterval(fetchThai2D, 30 * 1000);
 
-// ===== HTTP SERVER + WEBHOOK =====
+/* =========================
+   🌐 WEBHOOK SERVER
+   ========================= */
 http
   .createServer((req, res) => {
     if (req.method === "POST") {
       let body = "";
-      req.on("data", chunk => (body += chunk));
+      req.on("data", (c) => (body += c));
       req.on("end", () => {
         try {
           bot.processUpdate(JSON.parse(body));
