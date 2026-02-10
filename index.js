@@ -257,7 +257,7 @@ function liveMessageTemplate(label, liveNum, set, value, upd) {
 
   return (
 `╭───────────╮
-│ ${label} │
+│ ${label}│တိုက်ရိုက်Live
 ╰───────────╯
 📅 ${prettyMMT()}
 
@@ -277,7 +277,7 @@ function liveMessageTemplate(label, liveNum, set, value, upd) {
 function finalMessageTemplate(label, finalNum, set, value, upd) {
   return (
 `╭───────────╮
-│ ${label} │
+│ ${label}│ထွက်ဂဏန်း
 ╰───────────╯
 📅 ${prettyMMT()}
 
