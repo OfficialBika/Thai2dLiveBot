@@ -89,7 +89,7 @@ function minutesNowMMT() {
 // Evening live window: 15:59 – 16:31
 function inMorningLiveWindow() {
   const m = minutesNowMMT();
-  return m >= 11 * 60 + 45 && m <= 12 * 60 + 2;
+  return m >= 11 * 60 + 25 && m <= 12 * 60 + 2;
 }
 function inEveningLiveWindow() {
   const m = minutesNowMMT();
@@ -485,7 +485,7 @@ bot.onText(/\/start/, async (msg) => {
 `🎯 Myanmar 2D Live Bot
 
 ⏰ Market Time (Myanmar)
-🌅 Morning : 11:45 – 12:02
+🌅 Morning : 11:25 – 12:02
 🌆 Evening : 3:59 – 4:31
 
 🔴 Live numbers = Red dot (Edit mode)
