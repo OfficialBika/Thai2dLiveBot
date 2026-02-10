@@ -2,11 +2,11 @@
  * Myanmar 2D Live Bot — MYLUCKY2D3D API (WEBHOOK / Render)
  * =======================================================
  * ✅ Live updates via EDIT mode every 5s (no spam)
- * ✅ Final result ✅ + Pin (ONLY when fiStatus === "yes")
+ * ✅ Live animation (Bracket Bounce): ⟪82⟫ → ⟨82⟩ → 〔82〕 → 【82】
+ * ✅ Final result ✅ + Pin (ONLY when fiStatus === "yes") — Final is NORMAL number (no animation)
  * ✅ Modern/Internet separate posts (9:30 AM & 2:00 PM MMT) — NO PIN
  * ✅ Single channel only
  * ✅ Admin-only /forceam /forcepm
- * ✅ Pulse indicator for “moving/fade-like” live feeling (Telegram-safe)
  * ✅ Rate-limit (429) retry + robust error handling
  *
  * ENV (Render):
@@ -85,8 +85,8 @@ function minutesNowMMT() {
 }
 
 // ===== TIME WINDOWS (MMT) =====
-// Morning live window: 11:45 – 12:02
-// Evening live window: 15:59 – 16:31
+// Morning live window: 11:25 – 12:02 (MMT)
+// Evening live window: 15:59 – 16:31 (MMT)
 function inMorningLiveWindow() {
   const m = minutesNowMMT();
   return m >= 11 * 60 + 25 && m <= 12 * 60 + 2;
@@ -103,11 +103,21 @@ function inWindow(h, min, windowMin = 2) {
   return now >= t && now <= t + windowMin;
 }
 
-// ===== Pulse indicator (Telegram-safe “moving” effect) =====
+// ===== Animation Tick (Telegram-safe) =====
 let pulseIdx = 0;
-function pulseDot() {
+function pulseTick() {
   pulseIdx = (pulseIdx + 1) % 4;
-  return ["●", "◐", "◑", "○"][pulseIdx];
+}
+
+// ✅ Style: Bracket Bounce animation
+function bracketBounce(n) {
+  const frames = [
+    `⟪${n}⟫`,
+    `⟨${n}⟩`,
+    `〔${n}〕`,
+    `【${n}】`,
+  ];
+  return frames[pulseIdx % frames.length];
 }
 
 // ===== SAFE HELPERS (rate limit retry) =====
@@ -189,7 +199,7 @@ async function fetchLive(periodVal /* 'am'|'pm' */) {
   return postForm(API_LIVE, { dateVal, periodVal });
 }
 
-// Optional (not required for core features)
+// (Optional) not required for core features:
 async function fetchAmReport() {
   const dateVal = ymdMMT();
   return postForm(API_AM_REPORT, { dateVal });
@@ -242,14 +252,16 @@ async function fetchModernInternetBlocks() {
 
 // ===== MESSAGE FORMATTERS =====
 function liveMessageTemplate(label, liveNum, set, value, upd) {
-  const pulse = pulseDot();
+  pulseTick(); // animation frame tick every build
+  const animatedNum = bracketBounce(liveNum || "--");
+
   return (
 `╭───────────╮
 │ ${label} │
 ╰───────────╯
 📅 ${prettyMMT()}
 
-🎯 *Now 2D* : 🔴 *${liveNum || "--"}*
+🎯 *Now 2D* : 🔴 *${animatedNum}*
 
 📊 *SET*
 🟢 *${set || "--"}*
@@ -257,11 +269,11 @@ function liveMessageTemplate(label, liveNum, set, value, upd) {
 💰 *VALUE*
 🔵 *${value || "--"}*
 
-${pulse} Live updating
 🕒 Updated: *${upd || "--"}*`
   );
 }
 
+// Final stays NORMAL (no animation)
 function finalMessageTemplate(label, finalNum, set, value, upd) {
   return (
 `╭───────────╮
@@ -347,7 +359,8 @@ async function upsertLive(period, data) {
   const isAM = period === "am";
   const label = isAM ? "🌅 MORNING" : "🌆 EVENING";
 
-  const key = `${data.playLucky}|${data.playSet}|${data.playValue}|${data.playDtm}|${data.fiStatus}`;
+  // IMPORTANT: include pulseIdx so animation edits keep happening even if data doesn't change
+  const key = `${data.playLucky}|${data.playSet}|${data.playValue}|${data.playDtm}|${data.fiStatus}|${pulseIdx}`;
   if (isAM && key === lastKeyAM) return;
   if (!isAM && key === lastKeyPM) return;
 
@@ -488,7 +501,7 @@ bot.onText(/\/start/, async (msg) => {
 🌅 Morning : 11:25 – 12:02
 🌆 Evening : 3:59 – 4:31
 
-🔴 Live numbers = Red dot (Edit mode)
+🔴 Live numbers = Red dot (Edit mode + Animation)
 ✅ Final result = Check + Pin (Only final)
 
 🧠 Modern/Internet (Separate posts)
@@ -577,7 +590,7 @@ bot.onText(/\/forcepm/, async (msg) => {
   }
 });
 
-// Optional: show your Telegram ID (admin can use to confirm)
+// Optional: show your Telegram ID
 bot.onText(/\/myid/, async (msg) => {
   const chatId = msg.chat.id;
   await safeSendMessage(chatId, `🆔 Your Telegram ID: ${msg.from.id}`);
@@ -604,4 +617,3 @@ http
     res.end("Bot is running");
   })
   .listen(PORT, () => console.log("✅ Server running on port", PORT));
-
