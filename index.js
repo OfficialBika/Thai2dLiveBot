@@ -68,12 +68,14 @@ bot
   .catch((e) => console.error("❌ setWebHook error:", e.message));
 
 // ===== API ENDPOINTS =====
-const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb"; // POST dateVal, periodVal(am/pm)
+const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb"; // POST dateVal, periodVal (am/pm)
 const HOME_URL = "https://mylucky2d3d.com/"; // for modern/internet HTML scrape
 
 // ===== UTIL: Myanmar Time (Asia/Yangon) =====
 function nowMMTDateObj() {
-  return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
+  return new Date(
+    new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" })
+  );
 }
 function ymdMMT() {
   const d = nowMMTDateObj();
@@ -90,7 +92,7 @@ function prettyMMT() {
       year: "numeric",
       hour: "numeric",
       minute: "2-digit",
-      hour12: true
+      hour12: true,
     })
     .replace(",", " •");
 }
@@ -149,12 +151,20 @@ async function safeSendMessage(chatId, text, opts = {}) {
 }
 async function safeEditMessage(chatId, messageId, text, opts = {}) {
   try {
-    return await bot.editMessageText(text, { chat_id: chatId, message_id: messageId, ...opts });
+    return await bot.editMessageText(text, {
+      chat_id: chatId,
+      message_id: messageId,
+      ...opts,
+    });
   } catch (e) {
     const ra = tgRetryAfterSeconds(e);
     if (ra) {
       await sleep((ra + 1) * 1000);
-      return bot.editMessageText(text, { chat_id: chatId, message_id: messageId, ...opts });
+      return bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: messageId,
+        ...opts,
+      });
     }
     const desc = e?.response?.body?.description || "";
     if (desc.includes("message is not modified")) return null;
@@ -163,12 +173,16 @@ async function safeEditMessage(chatId, messageId, text, opts = {}) {
 }
 async function safePin(chatId, messageId) {
   try {
-    return await bot.pinChatMessage(chatId, messageId, { disable_notification: true });
+    return await bot.pinChatMessage(chatId, messageId, {
+      disable_notification: true,
+    });
   } catch (e) {
     const ra = tgRetryAfterSeconds(e);
     if (ra) {
       await sleep((ra + 1) * 1000);
-      return bot.pinChatMessage(chatId, messageId, { disable_notification: true });
+      return bot.pinChatMessage(chatId, messageId, {
+        disable_notification: true,
+      });
     }
     throw e;
   }
@@ -181,20 +195,42 @@ async function safeUnpin(chatId, messageId) {
   }
 }
 
-// ===== API CALLS =====
+// ===== API CALLS (Live AM/PM) =====
 async function postForm(url, paramsObj) {
   const form = new URLSearchParams();
-  for (const [k, v] of Object.entries(paramsObj)) form.append(k, String(v));
+  for (const [k, v] of Object.entries(paramsObj)) {
+    form.append(k, String(v));
+  }
 
-  const { data } = await axios.post(url, form, {
-    timeout: 15000,
+  const res = await axios.post(url, form.toString(), {
+    timeout: 20000,
+    validateStatus: () => true, // we handle non-200 ourselves
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": "Mozilla/5.0"
-    }
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      Accept: "application/json, text/javascript, */*; q=0.01",
+      Origin: "https://mylucky2d3d.com",
+      Referer: "https://mylucky2d3d.com/2d",
+      "X-Requested-With": "XMLHttpRequest",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    },
   });
-  return data;
+
+  if (res.status !== 200) {
+    console.log("Live API raw status:", res.status);
+    if (typeof res.data === "string") {
+      console.log("Live API raw body (trunc):", res.data.slice(0, 200));
+    }
+    throw new Error(`Request failed with status code ${res.status}`);
+  }
+
+  if (!res.data || typeof res.data !== "object") {
+    throw new Error("Invalid response from live API");
+  }
+
+  return res.data;
 }
+
 async function fetchLive(periodVal /* 'am'|'pm' */) {
   const dateVal = ymdMMT();
   return postForm(API_LIVE, { dateVal, periodVal });
@@ -202,28 +238,26 @@ async function fetchLive(periodVal /* 'am'|'pm' */) {
 
 // ===== MODERN/INTERNET (HTML scrape) =====
 async function fetchModernInternetBlocks() {
-  const url = "https://mylucky2d3d.com/";
   const headers = {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept":
+    Accept:
       "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9,my;q=0.8",
     "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-    "Referer": "https://mylucky2d3d.com/",
+    Pragma: "no-cache",
+    Referer: HOME_URL,
     "Upgrade-Insecure-Requests": "1",
   };
 
-  // retry 2 times (406/403 sometimes)
   let html = null;
   for (let i = 0; i < 2; i++) {
     try {
-      const res = await axios.get(url, {
+      const res = await axios.get(HOME_URL, {
         timeout: 20000,
         headers,
         responseType: "text",
-        validateStatus: (s) => s >= 200 && s < 500, // don't throw, we handle
+        validateStatus: (s) => s >= 200 && s < 500,
       });
 
       if (res.status === 200 && typeof res.data === "string") {
@@ -231,8 +265,8 @@ async function fetchModernInternetBlocks() {
         break;
       }
 
-      // if 406/403 -> wait then retry
       if (res.status === 406 || res.status === 403) {
+        console.log("Modern/Internet HTML status:", res.status);
         await sleep(1200);
         continue;
       }
@@ -248,7 +282,6 @@ async function fetchModernInternetBlocks() {
 
   const $ = cheerio.load(html);
 
-  // ✅ page ထဲမှာ modIntV ကို class နဲ့ ရှိနေတာကြောင့် ဒီလိုစုပ်မယ်
   function pickBlock(timeLabel) {
     let block = null;
 
@@ -258,12 +291,13 @@ async function fetchModernInternetBlocks() {
         block = $(el);
       }
     });
+
     if (!block) return null;
 
     const nums = [];
     block.find(".modIntV").each((_, el) => {
       const v = $(el).text().trim();
-      if (/^\d{2}$/.test(v) || v === "--") nums.push(v);
+      if (/^\d{2,3}$/.test(v) || v === "--") nums.push(v);
     });
 
     return {
@@ -278,7 +312,6 @@ async function fetchModernInternetBlocks() {
     pm200: pickBlock("2:00 PM"),
   };
 }
-
 
 // ===== MESSAGE TEMPLATES =====
 function liveMessageTemplate(label, liveNum, set, value, upd) {
@@ -376,7 +409,7 @@ function resetDailyStateIfNeeded() {
   }
 }
 
-// ===== FINAL GUARDS (fix “Final တန်းပို့” issue) =====
+// ===== FINAL GUARDS =====
 // Only treat as Final if:
 // - fiStatus === "yes"
 // - AND (time is after official final time) OR playDtm includes "12:01" / "16:30"
@@ -399,7 +432,13 @@ async function upsertLive(period, data) {
   const label = isAM ? "🌅 MORNING" : "🌆 EVENING";
   const opts = { parse_mode: "Markdown" };
 
-  const text = liveMessageTemplate(label, data.playLucky, data.playSet, data.playValue, data.playDtm);
+  const text = liveMessageTemplate(
+    label,
+    data.playLucky,
+    data.playSet,
+    data.playValue,
+    data.playDtm
+  );
 
   if (isAM) {
     if (!liveMsgIdAM) {
@@ -423,7 +462,13 @@ async function postFinal(period, data) {
   const label = isAM ? "🌅 MORNING" : "🌆 EVENING";
   const opts = { parse_mode: "Markdown" };
 
-  const text = finalMessageTemplate(label, data.playLucky, data.playSet, data.playValue, data.playDtm);
+  const text = finalMessageTemplate(
+    label,
+    data.playLucky,
+    data.playSet,
+    data.playValue,
+    data.playDtm
+  );
   const sent = await safeSendMessage(CHANNEL_ID, text, opts);
 
   // unpin previous final for that period
@@ -469,7 +514,10 @@ async function tickLive() {
 
   // Morning window
   if (LIVE_ENABLE_AM && inRangeMinutes(AM_LIVE_START, AM_LIVE_END) && !finalDoneAM) {
-    const data = await fetchLive("am").catch(() => null);
+    const data = await fetchLive("am").catch((e) => {
+      console.log("AM live fetch error:", e.message);
+      return null;
+    });
     if (data && data.status === "success") {
       if (data.fiStatus === "yes" && looksLikeFinalTime("am", data.playDtm)) {
         await postFinal("am", data);
@@ -481,7 +529,10 @@ async function tickLive() {
 
   // Evening window
   if (LIVE_ENABLE_PM && inRangeMinutes(PM_LIVE_START, PM_LIVE_END) && !finalDonePM) {
-    const data = await fetchLive("pm").catch(() => null);
+    const data = await fetchLive("pm").catch((e) => {
+      console.log("PM live fetch error:", e.message);
+      return null;
+    });
     if (data && data.status === "success") {
       if (data.fiStatus === "yes" && looksLikeFinalTime("pm", data.playDtm)) {
         await postFinal("pm", data);
@@ -497,12 +548,16 @@ async function tickModInt() {
 
   // 9:30 AM window (9:30–9:33)
   if (inRangeMinutes("09:30", "09:33")) {
-    await postModInt("am930").catch(() => null);
+    await postModInt("am930").catch((e) =>
+      console.log("ModInt AM error:", e.message)
+    );
   }
 
   // 2:00 PM window (14:00–14:03)
   if (inRangeMinutes("14:00", "14:03")) {
-    await postModInt("pm200").catch(() => null);
+    await postModInt("pm200").catch((e) =>
+      console.log("ModInt PM error:", e.message)
+    );
   }
 }
 
@@ -547,9 +602,9 @@ Channel ကို join ပါ 👇`;
   await safeSendMessage(chatId, text, {
     reply_markup: {
       inline_keyboard: [
-        [{ text: "🔔 Join 2D Live Channel", url: "https://t.me/Live2DSet" }]
-      ]
-    }
+        [{ text: "🔔 Join 2D Live Channel", url: "https://t.me/Live2DSet" }],
+      ],
+    },
   });
 });
 
@@ -587,7 +642,7 @@ bot.onText(/\/myid/, async (msg) => {
   await safeSendMessage(msg.chat.id, `🆔 Your Telegram ID: ${msg.from.id}`);
 });
 
-// Admin: force live/final
+// Admin: force live/final (AM)
 bot.onText(/\/forceam/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
@@ -595,10 +650,12 @@ bot.onText(/\/forceam/, async (msg) => {
   try {
     const data = await fetchLive("am");
     if (!data || data.status !== "success") {
-      return safeSendMessage(chatId, `⚠️ AM fetch မရပါ (status: ${data?.status || "unknown"})`);
+      return safeSendMessage(
+        chatId,
+        `⚠️ AM fetch မရပါ (status: ${data?.status || "unknown"})`
+      );
     }
 
-    // force = respect real final guard, so you can still see live
     if (data.fiStatus === "yes" && looksLikeFinalTime("am", data.playDtm)) {
       await postFinal("am", data);
       return safeSendMessage(chatId, "✅ /forceam → Final posted + pinned");
@@ -611,6 +668,7 @@ bot.onText(/\/forceam/, async (msg) => {
   }
 });
 
+// Admin: force live/final (PM)
 bot.onText(/\/forcepm/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
@@ -618,7 +676,10 @@ bot.onText(/\/forcepm/, async (msg) => {
   try {
     const data = await fetchLive("pm");
     if (!data || data.status !== "success") {
-      return safeSendMessage(chatId, `⚠️ PM fetch မရပါ (status: ${data?.status || "unknown"})`);
+      return safeSendMessage(
+        chatId,
+        `⚠️ PM fetch မရပါ (status: ${data?.status || "unknown"})`
+      );
     }
 
     if (data.fiStatus === "yes" && looksLikeFinalTime("pm", data.playDtm)) {
@@ -633,26 +694,33 @@ bot.onText(/\/forcepm/, async (msg) => {
   }
 });
 
-// Admin: force modern/internet posts (NO PIN)
+// Admin: force Modern/Internet AM
 bot.onText(/\/forcemodam/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
   try {
     modIntPostedAM = false; // allow re-post
     await postModInt("am930");
-    await safeSendMessage(chatId, "✅ /forcemodam → Posted 9:30 AM Modern/Internet");
+    await safeSendMessage(
+      chatId,
+      "✅ /forcemodam → Posted 9:30 AM Modern/Internet"
+    );
   } catch (e) {
     await safeSendMessage(chatId, `❌ /forcemodam error: ${e.message}`);
   }
 });
 
+// Admin: force Modern/Internet PM
 bot.onText(/\/forcemodpm/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
   try {
     modIntPostedPM = false; // allow re-post
     await postModInt("pm200");
-    await safeSendMessage(chatId, "✅ /forcemodpm → Posted 2:00 PM Modern/Internet");
+    await safeSendMessage(
+      chatId,
+      "✅ /forcemodpm → Posted 2:00 PM Modern/Internet"
+    );
   } catch (e) {
     await safeSendMessage(chatId, `❌ /forcemodpm error: ${e.message}`);
   }
@@ -679,3 +747,4 @@ http
     res.end("Bot is running");
   })
   .listen(PORT, () => console.log("✅ Server running on port", PORT));
+
