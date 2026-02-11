@@ -1,23 +1,29 @@
 /**
- * Myanmar 2D Live Bot — MYLUCKY2D3D API (WEBHOOK / Render)
- * =======================================================
+ * Myanmar 2D Live Bot — MYLUCKY2D3D (WEBHOOK / Render)
+ * ===================================================
  * ✅ Live updates via EDIT mode every 5s (no spam)
  * ✅ Live animation (Bracket Bounce): ⟪82⟫ → ⟨82⟩ → 〔82〕 → 【82】
- * ✅ Final result ✅ + Pin (ONLY when fiStatus === "yes") — Final is NORMAL number (no animation)
+ * ✅ Final result ✅ + Pin (ONLY after final time + fiStatus === "yes")
  * ✅ Modern/Internet separate posts (9:30 AM & 2:00 PM MMT) — NO PIN
  * ✅ Single channel only
- * ✅ Admin-only /forceam /forcepm
+ * ✅ Admin-only: /forceam /forcepm /forcemodam /forcemodpm
+ * ✅ /test /status /myid
  * ✅ Rate-limit (429) retry + robust error handling
  *
  * ENV (Render):
  * - BOT_TOKEN   = Telegram Bot Token
  * - CHANNEL_ID  = @YourChannelUsername OR -100xxxxxxxxxx
- * - PUBLIC_URL  = https://your-app.onrender.com
- * - ADMIN_ID    = your Telegram numeric ID (only admin can use /forceam /forcepm)
+ * - PUBLIC_URL  = https://your-app.onrender.com   (NO trailing slash)
+ * - ADMIN_ID    = your Telegram numeric ID
+ *
  * Optional:
  * - EDIT_EVERY_MS = 5000
- * - LIVE_ENABLE_AM = 1 (default on)
- * - LIVE_ENABLE_PM = 1 (default on)
+ * - LIVE_ENABLE_AM = 1 (default on)  (set 0 to disable)
+ * - LIVE_ENABLE_PM = 1 (default on)  (set 0 to disable)
+ * - AM_LIVE_START = 11:30   (default 11:30)
+ * - AM_LIVE_END   = 12:02   (default 12:02)
+ * - PM_LIVE_START = 15:55   (default 15:55)
+ * - PM_LIVE_END   = 16:31   (default 16:31)
  */
 
 const TelegramBot = require("node-telegram-bot-api");
@@ -36,8 +42,18 @@ const WEBHOOK_PATH = "/webhook";
 const WEBHOOK_URL = `${String(PUBLIC_URL || "").replace(/\/$/, "")}${WEBHOOK_PATH}`;
 
 const EDIT_EVERY_MS = Number(process.env.EDIT_EVERY_MS || 5000);
-const LIVE_ENABLE_AM = process.env.LIVE_ENABLE_AM !== "0"; // default true
-const LIVE_ENABLE_PM = process.env.LIVE_ENABLE_PM !== "0"; // default true
+const LIVE_ENABLE_AM = process.env.LIVE_ENABLE_AM !== "0";
+const LIVE_ENABLE_PM = process.env.LIVE_ENABLE_PM !== "0";
+
+// Live window overrides (MMT)
+const AM_LIVE_START = process.env.AM_LIVE_START || "11:30";
+const AM_LIVE_END = process.env.AM_LIVE_END || "12:02";
+const PM_LIVE_START = process.env.PM_LIVE_START || "15:55";
+const PM_LIVE_END = process.env.PM_LIVE_END || "16:31";
+
+// Final official moments (MMT)
+const AM_FINAL_TIME = "12:01";
+const PM_FINAL_TIME = "16:30";
 
 if (!BOT_TOKEN || !CHANNEL_ID || !PUBLIC_URL) {
   console.error("❌ Missing ENV. Required: BOT_TOKEN, CHANNEL_ID, PUBLIC_URL");
@@ -51,10 +67,9 @@ bot
   .then(() => console.log("✅ Webhook set:", WEBHOOK_URL))
   .catch((e) => console.error("❌ setWebHook error:", e.message));
 
-// ===== API ENDPOINTS (from view-source) =====
+// ===== API ENDPOINTS =====
 const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb"; // POST dateVal, periodVal(am/pm)
-const API_AM_REPORT = "https://mylucky2d3d.com/zusksbasqyfg/bpkhhthjpgve"; // POST dateVal (optional use)
-const API_WEEKLY = "https://mylucky2d3d.com/zusksbasqyfg/ypcydmlxbhfv"; // POST dateVal (optional use)
+const HOME_URL = "https://mylucky2d3d.com/"; // for modern/internet HTML scrape
 
 // ===== UTIL: Myanmar Time (Asia/Yangon) =====
 function nowMMTDateObj() {
@@ -83,41 +98,33 @@ function minutesNowMMT() {
   const d = nowMMTDateObj();
   return d.getHours() * 60 + d.getMinutes();
 }
-
-// ===== TIME WINDOWS (MMT) =====
-// Morning live window: 11:25 – 12:02 (MMT)
-// Evening live window: 15:59 – 16:31 (MMT)
-function inMorningLiveWindow() {
-  const m = minutesNowMMT();
-  return m >= 11 * 60 + 25 && m <= 12 * 60 + 2;
+function parseHMToMinutes(hm) {
+  const [h, m] = String(hm).split(":").map((x) => Number(x));
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
 }
-function inEveningLiveWindow() {
-  const m = minutesNowMMT();
-  return m >= 15 * 60 + 59 && m <= 16 * 60 + 31;
-}
-
-// Modern/Internet times (MMT): 9:30 AM and 2:00 PM
-function inWindow(h, min, windowMin = 2) {
+function inRangeMinutes(startHM, endHM) {
   const now = minutesNowMMT();
-  const t = h * 60 + min;
-  return now >= t && now <= t + windowMin;
+  const s = parseHMToMinutes(startHM);
+  const e = parseHMToMinutes(endHM);
+  if (s === null || e === null) return false;
+  return now >= s && now <= e;
+}
+function afterHM(hm) {
+  const now = minutesNowMMT();
+  const t = parseHMToMinutes(hm);
+  if (t === null) return false;
+  return now >= t;
 }
 
-// ===== Animation Tick (Telegram-safe) =====
-let pulseIdx = 0;
-function pulseTick() {
-  pulseIdx = (pulseIdx + 1) % 4;
+// ===== Animation (Bracket Bounce) =====
+let animIdx = 0;
+function tickAnim() {
+  animIdx = (animIdx + 1) % 4;
 }
-
-// ✅ Style: Bracket Bounce animation
 function bracketBounce(n) {
-  const frames = [
-    `⟪${n}⟫`,
-    `⟨${n}⟩`,
-    `〔${n}〕`,
-    `【${n}】`,
-  ];
-  return frames[pulseIdx % frames.length];
+  const frames = [`⟪${n}⟫`, `⟨${n}⟩`, `〔${n}〕`, `【${n}】`];
+  return frames[animIdx % frames.length];
 }
 
 // ===== SAFE HELPERS (rate limit retry) =====
@@ -183,76 +190,56 @@ async function postForm(url, paramsObj) {
     timeout: 15000,
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+      "User-Agent": "Mozilla/5.0"
     }
   });
   return data;
 }
-
-/**
- * Live AM/PM data:
- * returns: { status, playSet, playValue, playLucky, playDtm, fiStatus }
- */
 async function fetchLive(periodVal /* 'am'|'pm' */) {
   const dateVal = ymdMMT();
   return postForm(API_LIVE, { dateVal, periodVal });
 }
 
-// (Optional) not required for core features:
-async function fetchAmReport() {
-  const dateVal = ymdMMT();
-  return postForm(API_AM_REPORT, { dateVal });
-}
-async function fetchWeekly() {
-  const dateVal = ymdMMT();
-  return postForm(API_WEEKLY, { dateVal });
-}
-
 // ===== MODERN/INTERNET (HTML scrape) =====
 async function fetchModernInternetBlocks() {
-  const res = await axios.get("https://mylucky2d3d.com/", {
+  const res = await axios.get(HOME_URL, {
     timeout: 15000,
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
-    }
+    headers: { "User-Agent": "Mozilla/5.0" }
   });
 
   const $ = cheerio.load(res.data);
 
-  function pickBlock(timeLabel) {
-    let block = null;
-    $(".feature-card").each((_, el) => {
-      const t = $(el).text().replace(/\s+/g, " ").trim();
-      if (t.includes(timeLabel) && t.includes("Modern") && t.includes("Internet")) {
-        block = $(el);
-      }
-    });
-    if (!block) return null;
+  function pick(timeLabel) {
+    const card = $(".feature-card")
+      .filter((_, el) => {
+        const t = $(el).text().replace(/\s+/g, " ").trim();
+        return t.includes(timeLabel) && t.includes("Modern") && t.includes("Internet");
+      })
+      .first();
 
-    const nums = [];
-    block.find(".modIntV").each((_, el) => {
-      const v = $(el).text().trim();
-      if (/^\d{2}$/.test(v)) nums.push(v);
-    });
+    if (!card.length) return null;
+
+    const vals = card
+      .find(".modIntV")
+      .map((_, el) => $(el).text().trim())
+      .get();
 
     return {
       time: timeLabel,
-      modern: nums[0] || "--",
-      internet: nums[1] || "--"
+      modern: vals[0] || "--",
+      internet: vals[1] || "--"
     };
   }
 
   return {
-    am930: pickBlock("9:30 AM"),
-    pm200: pickBlock("2:00 PM")
+    am930: pick("9:30 AM"),
+    pm200: pick("2:00 PM")
   };
 }
 
-// ===== MESSAGE FORMATTERS =====
+// ===== MESSAGE TEMPLATES =====
 function liveMessageTemplate(label, liveNum, set, value, upd) {
-  pulseTick(); // animation frame tick every build
+  tickAnim();
   const animatedNum = bracketBounce(liveNum || "--");
 
   return (
@@ -273,7 +260,6 @@ function liveMessageTemplate(label, liveNum, set, value, upd) {
   );
 }
 
-// Final stays NORMAL (no animation)
 function finalMessageTemplate(label, finalNum, set, value, upd) {
   return (
 `╭───────────╮
@@ -317,17 +303,13 @@ let liveMsgIdPM = null;
 let pinnedFinalIdAM = null;
 let pinnedFinalIdPM = null;
 
-// daily Mod/Int post lock
-let lastPostedModIntMorningDate = null;
-let lastPostedModIntEveningDate = null;
-
-// final posted flags (per day)
+// final done flags
 let finalDoneAM = false;
 let finalDonePM = false;
 
-// change detection to reduce edits
-let lastKeyAM = null;
-let lastKeyPM = null;
+// daily mod/int posted lock
+let modIntPostedAM = false;
+let modIntPostedPM = false;
 
 // ===== DAILY RESET =====
 function resetDailyStateIfNeeded() {
@@ -341,31 +323,40 @@ function resetDailyStateIfNeeded() {
     pinnedFinalIdAM = null;
     pinnedFinalIdPM = null;
 
-    lastPostedModIntMorningDate = null;
-    lastPostedModIntEveningDate = null;
-
     finalDoneAM = false;
     finalDonePM = false;
 
-    lastKeyAM = null;
-    lastKeyPM = null;
+    modIntPostedAM = false;
+    modIntPostedPM = false;
 
     console.log("✅ Daily state reset:", stateDate);
   }
+}
+
+// ===== FINAL GUARDS (fix “Final တန်းပို့” issue) =====
+// Only treat as Final if:
+// - fiStatus === "yes"
+// - AND (time is after official final time) OR playDtm includes "12:01" / "16:30"
+function looksLikeFinalTime(period, playDtm) {
+  const dtm = String(playDtm || "");
+  if (period === "am") {
+    if (dtm.includes("12:01")) return true;
+    return afterHM(AM_FINAL_TIME);
+  }
+  if (period === "pm") {
+    if (dtm.includes("16:30")) return true;
+    return afterHM(PM_FINAL_TIME);
+  }
+  return false;
 }
 
 // ===== LIVE EDIT FLOW =====
 async function upsertLive(period, data) {
   const isAM = period === "am";
   const label = isAM ? "🌅 MORNING" : "🌆 EVENING";
-
-  // IMPORTANT: include pulseIdx so animation edits keep happening even if data doesn't change
-  const key = `${data.playLucky}|${data.playSet}|${data.playValue}|${data.playDtm}|${data.fiStatus}|${pulseIdx}`;
-  if (isAM && key === lastKeyAM) return;
-  if (!isAM && key === lastKeyPM) return;
+  const opts = { parse_mode: "Markdown" };
 
   const text = liveMessageTemplate(label, data.playLucky, data.playSet, data.playValue, data.playDtm);
-  const opts = { parse_mode: "Markdown" };
 
   if (isAM) {
     if (!liveMsgIdAM) {
@@ -374,7 +365,6 @@ async function upsertLive(period, data) {
     } else {
       await safeEditMessage(CHANNEL_ID, liveMsgIdAM, text, opts);
     }
-    lastKeyAM = key;
   } else {
     if (!liveMsgIdPM) {
       const sent = await safeSendMessage(CHANNEL_ID, text, opts);
@@ -382,62 +372,63 @@ async function upsertLive(period, data) {
     } else {
       await safeEditMessage(CHANNEL_ID, liveMsgIdPM, text, opts);
     }
-    lastKeyPM = key;
   }
 }
 
 async function postFinal(period, data) {
   const isAM = period === "am";
   const label = isAM ? "🌅 MORNING" : "🌆 EVENING";
-
-  const text = finalMessageTemplate(label, data.playLucky, data.playSet, data.playValue, data.playDtm);
   const opts = { parse_mode: "Markdown" };
 
+  const text = finalMessageTemplate(label, data.playLucky, data.playSet, data.playValue, data.playDtm);
   const sent = await safeSendMessage(CHANNEL_ID, text, opts);
 
-  // unpin previous final for this period only
+  // unpin previous final for that period
   if (isAM && pinnedFinalIdAM) await safeUnpin(CHANNEL_ID, pinnedFinalIdAM);
   if (!isAM && pinnedFinalIdPM) await safeUnpin(CHANNEL_ID, pinnedFinalIdPM);
 
-  // pin this final
   await safePin(CHANNEL_ID, sent.message_id);
 
   if (isAM) pinnedFinalIdAM = sent.message_id;
   else pinnedFinalIdPM = sent.message_id;
 
-  // stop editing further for that period today
   if (isAM) finalDoneAM = true;
   else finalDonePM = true;
 }
 
-// ===== MODERN/INTERNET DAILY POSTS (NO PIN) =====
-async function postModInt(type /* morning|evening */) {
-  const today = ymdMMT();
-  if (type === "morning" && lastPostedModIntMorningDate === today) return;
-  if (type === "evening" && lastPostedModIntEveningDate === today) return;
-
+// ===== MODERN/INTERNET POST (NO PIN) =====
+async function postModInt(which /* "am930" | "pm200" */) {
   const blocks = await fetchModernInternetBlocks();
-  const block = type === "morning" ? blocks?.am930 : blocks?.pm200;
-  if (!block) return;
+  if (!blocks) return;
 
-  const title = type === "morning" ? "🕤 *9:30 AM*" : "🕑 *2:00 PM*";
-  const msg = modIntTemplate(title, block.modern, block.internet);
+  if (which === "am930") {
+    if (modIntPostedAM) return;
+    const b = blocks.am930;
+    if (!b) return;
+    const msg = modIntTemplate("🕤 *9:30 AM*", b.modern, b.internet);
+    await safeSendMessage(CHANNEL_ID, msg, { parse_mode: "Markdown" });
+    modIntPostedAM = true;
+  }
 
-  await safeSendMessage(CHANNEL_ID, msg, { parse_mode: "Markdown" });
-
-  if (type === "morning") lastPostedModIntMorningDate = today;
-  else lastPostedModIntEveningDate = today;
+  if (which === "pm200") {
+    if (modIntPostedPM) return;
+    const b = blocks.pm200;
+    if (!b) return;
+    const msg = modIntTemplate("🕑 *2:00 PM*", b.modern, b.internet);
+    await safeSendMessage(CHANNEL_ID, msg, { parse_mode: "Markdown" });
+    modIntPostedPM = true;
+  }
 }
 
 // ===== MAIN TICKS =====
 async function tickLive() {
   resetDailyStateIfNeeded();
 
-  // Morning live
-  if (LIVE_ENABLE_AM && inMorningLiveWindow() && !finalDoneAM) {
+  // Morning window
+  if (LIVE_ENABLE_AM && inRangeMinutes(AM_LIVE_START, AM_LIVE_END) && !finalDoneAM) {
     const data = await fetchLive("am").catch(() => null);
     if (data && data.status === "success") {
-      if (data.fiStatus === "yes") {
+      if (data.fiStatus === "yes" && looksLikeFinalTime("am", data.playDtm)) {
         await postFinal("am", data);
       } else {
         await upsertLive("am", data);
@@ -445,11 +436,11 @@ async function tickLive() {
     }
   }
 
-  // Evening live
-  if (LIVE_ENABLE_PM && inEveningLiveWindow() && !finalDonePM) {
+  // Evening window
+  if (LIVE_ENABLE_PM && inRangeMinutes(PM_LIVE_START, PM_LIVE_END) && !finalDonePM) {
     const data = await fetchLive("pm").catch(() => null);
     if (data && data.status === "success") {
-      if (data.fiStatus === "yes") {
+      if (data.fiStatus === "yes" && looksLikeFinalTime("pm", data.playDtm)) {
         await postFinal("pm", data);
       } else {
         await upsertLive("pm", data);
@@ -461,18 +452,18 @@ async function tickLive() {
 async function tickModInt() {
   resetDailyStateIfNeeded();
 
-  // Morning 9:30 AM (9:30–9:32)
-  if (inWindow(9, 30, 2)) {
-    await postModInt("morning").catch(() => null);
+  // 9:30 AM window (9:30–9:33)
+  if (inRangeMinutes("09:30", "09:33")) {
+    await postModInt("am930").catch(() => null);
   }
 
-  // Evening 2:00 PM (14:00–14:02)
-  if (inWindow(14, 0, 2)) {
-    await postModInt("evening").catch(() => null);
+  // 2:00 PM window (14:00–14:03)
+  if (inRangeMinutes("14:00", "14:03")) {
+    await postModInt("pm200").catch(() => null);
   }
 }
 
-// Start loops
+// loops
 setInterval(() => {
   tickLive().catch((e) => console.log("Live tick error:", e.message));
 }, EDIT_EVERY_MS);
@@ -498,11 +489,11 @@ bot.onText(/\/start/, async (msg) => {
 `🎯 Myanmar 2D Live Bot
 
 ⏰ Market Time (Myanmar)
-🌅 Morning : 11:25 – 12:02
-🌆 Evening : 3:59 – 4:31
+🌅 Morning Live : ${AM_LIVE_START} – ${AM_LIVE_END}
+🌆 Evening Live : ${PM_LIVE_START} – ${PM_LIVE_END}
 
-🔴 Live numbers = Red dot (Edit mode + Animation)
-✅ Final result = Check + Pin (Only final)
+🔴 Live = Red dot (Edit mode + Animation)
+✅ Final = Check + Pin (Only after ${AM_FINAL_TIME} / ${PM_FINAL_TIME})
 
 🧠 Modern/Internet (Separate posts)
 🕤 9:30 AM  •  🕑 2:00 PM
@@ -534,18 +525,26 @@ bot.onText(/\/status/, async (msg) => {
 📅 Date (MMT): ${ymdMMT()}
 ⏱ Edit interval: ${EDIT_EVERY_MS}ms
 
-🌅 Morning live msg: ${liveMsgIdAM ? "YES" : "NO"}
-🌆 Evening live msg: ${liveMsgIdPM ? "YES" : "NO"}
+🌅 AM live msg: ${liveMsgIdAM ? "YES" : "NO"}
+🌆 PM live msg: ${liveMsgIdPM ? "YES" : "NO"}
 
-✅ Final AM posted: ${finalDoneAM ? "YES" : "NO"}
-✅ Final PM posted: ${finalDonePM ? "YES" : "NO"}
+✅ Final AM done: ${finalDoneAM ? "YES" : "NO"}
+✅ Final PM done: ${finalDonePM ? "YES" : "NO"}
 
-🧠 Admin ID set: ${ADMIN_ID ? "YES" : "NO"}`;
+🧠 Mod/Int AM posted: ${modIntPostedAM ? "YES" : "NO"}
+🧠 Mod/Int PM posted: ${modIntPostedPM ? "YES" : "NO"}
+
+🔐 Admin ID set: ${ADMIN_ID ? "YES" : "NO"}
+📢 Channel: ${CHANNEL_ID}`;
 
   await safeSendMessage(msg.chat.id, s);
 });
 
-// Admin-only: Force fetch + update (without time window)
+bot.onText(/\/myid/, async (msg) => {
+  await safeSendMessage(msg.chat.id, `🆔 Your Telegram ID: ${msg.from.id}`);
+});
+
+// Admin: force live/final
 bot.onText(/\/forceam/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
@@ -556,7 +555,8 @@ bot.onText(/\/forceam/, async (msg) => {
       return safeSendMessage(chatId, `⚠️ AM fetch မရပါ (status: ${data?.status || "unknown"})`);
     }
 
-    if (data.fiStatus === "yes") {
+    // force = respect real final guard, so you can still see live
+    if (data.fiStatus === "yes" && looksLikeFinalTime("am", data.playDtm)) {
       await postFinal("am", data);
       return safeSendMessage(chatId, "✅ /forceam → Final posted + pinned");
     } else {
@@ -578,7 +578,7 @@ bot.onText(/\/forcepm/, async (msg) => {
       return safeSendMessage(chatId, `⚠️ PM fetch မရပါ (status: ${data?.status || "unknown"})`);
     }
 
-    if (data.fiStatus === "yes") {
+    if (data.fiStatus === "yes" && looksLikeFinalTime("pm", data.playDtm)) {
       await postFinal("pm", data);
       return safeSendMessage(chatId, "✅ /forcepm → Final posted + pinned");
     } else {
@@ -590,10 +590,29 @@ bot.onText(/\/forcepm/, async (msg) => {
   }
 });
 
-// Optional: show your Telegram ID
-bot.onText(/\/myid/, async (msg) => {
+// Admin: force modern/internet posts (NO PIN)
+bot.onText(/\/forcemodam/, async (msg) => {
   const chatId = msg.chat.id;
-  await safeSendMessage(chatId, `🆔 Your Telegram ID: ${msg.from.id}`);
+  if (!isAdmin(msg)) return denyNotAdmin(chatId);
+  try {
+    modIntPostedAM = false; // allow re-post
+    await postModInt("am930");
+    await safeSendMessage(chatId, "✅ /forcemodam → Posted 9:30 AM Modern/Internet");
+  } catch (e) {
+    await safeSendMessage(chatId, `❌ /forcemodam error: ${e.message}`);
+  }
+});
+
+bot.onText(/\/forcemodpm/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(msg)) return denyNotAdmin(chatId);
+  try {
+    modIntPostedPM = false; // allow re-post
+    await postModInt("pm200");
+    await safeSendMessage(chatId, "✅ /forcemodpm → Posted 2:00 PM Modern/Internet");
+  } catch (e) {
+    await safeSendMessage(chatId, `❌ /forcemodpm error: ${e.message}`);
+  }
 });
 
 // ===== HTTP SERVER (Webhook Receiver) =====
