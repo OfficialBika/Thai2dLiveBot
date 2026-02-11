@@ -202,40 +202,83 @@ async function fetchLive(periodVal /* 'am'|'pm' */) {
 
 // ===== MODERN/INTERNET (HTML scrape) =====
 async function fetchModernInternetBlocks() {
-  const res = await axios.get(HOME_URL, {
-    timeout: 15000,
-    headers: { "User-Agent": "Mozilla/5.0" }
-  });
+  const url = "https://mylucky2d3d.com/";
+  const headers = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept":
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,my;q=0.8",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Referer": "https://mylucky2d3d.com/",
+    "Upgrade-Insecure-Requests": "1",
+  };
 
-  const $ = cheerio.load(res.data);
+  // retry 2 times (406/403 sometimes)
+  let html = null;
+  for (let i = 0; i < 2; i++) {
+    try {
+      const res = await axios.get(url, {
+        timeout: 20000,
+        headers,
+        responseType: "text",
+        validateStatus: (s) => s >= 200 && s < 500, // don't throw, we handle
+      });
 
-  function pick(timeLabel) {
-    const card = $(".feature-card")
-      .filter((_, el) => {
-        const t = $(el).text().replace(/\s+/g, " ").trim();
-        return t.includes(timeLabel) && t.includes("Modern") && t.includes("Internet");
-      })
-      .first();
+      if (res.status === 200 && typeof res.data === "string") {
+        html = res.data;
+        break;
+      }
 
-    if (!card.length) return null;
+      // if 406/403 -> wait then retry
+      if (res.status === 406 || res.status === 403) {
+        await sleep(1200);
+        continue;
+      }
 
-    const vals = card
-      .find(".modIntV")
-      .map((_, el) => $(el).text().trim())
-      .get();
+      throw new Error(`HTTP_${res.status}`);
+    } catch (e) {
+      if (i === 1) throw e;
+      await sleep(1200);
+    }
+  }
+
+  if (!html) throw new Error("HTML_EMPTY");
+
+  const $ = cheerio.load(html);
+
+  // ✅ page ထဲမှာ modIntV ကို class နဲ့ ရှိနေတာကြောင့် ဒီလိုစုပ်မယ်
+  function pickBlock(timeLabel) {
+    let block = null;
+
+    $(".feature-card").each((_, el) => {
+      const t = $(el).text().replace(/\s+/g, " ").trim();
+      if (t.includes(timeLabel) && t.includes("Modern") && t.includes("Internet")) {
+        block = $(el);
+      }
+    });
+    if (!block) return null;
+
+    const nums = [];
+    block.find(".modIntV").each((_, el) => {
+      const v = $(el).text().trim();
+      if (/^\d{2}$/.test(v) || v === "--") nums.push(v);
+    });
 
     return {
       time: timeLabel,
-      modern: vals[0] || "--",
-      internet: vals[1] || "--"
+      modern: nums[0] ?? "--",
+      internet: nums[1] ?? "--",
     };
   }
 
   return {
-    am930: pick("9:30 AM"),
-    pm200: pick("2:00 PM")
+    am930: pickBlock("9:30 AM"),
+    pm200: pickBlock("2:00 PM"),
   };
 }
+
 
 // ===== MESSAGE TEMPLATES =====
 function liveMessageTemplate(label, liveNum, set, value, upd) {
