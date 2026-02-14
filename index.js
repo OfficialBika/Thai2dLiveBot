@@ -318,7 +318,7 @@ function getWeekdayMMT() {
 }
 
 function weekdayNameFromIndex(i) {
-  return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][i] || "Unknown";
+  return ["တနင်္ဂနွေနေ့", "တနင်္လာနေ့", "အင်္ဂါနေ့", "ဗုဒ္ဓဟူးနေ့", "ကြာသပတေးနေ့", "သောကြနေ့", "စနေနေ့"][i] || "Unknown";
 }
 
 function parseDateToYMD(text) {
@@ -640,7 +640,7 @@ async function upsertLive(period, data) {
 
 async function postFinal(period, data) {
   const isAM = period === "am";
-  const label = isAM ? "🌅 MORNING" : "🌆 EVENING";
+  const label = isAM ? "🌅 မနက်" : "🌆 ညနေ";
   const opts = { parse_mode: "Markdown" };
 
   const text = finalMessageTemplate(label, data.playLucky, data.playSet, data.playValue, data.playDtm);
@@ -773,8 +773,8 @@ bot.onText(/\/start/, async (msg) => {
 `🎯 Myanmar 2D Live Bot
 
 ⏰ Market Time (Myanmar)
-🌅 Morning Live : ${AM_LIVE_START} – ${AM_LIVE_END}
-🌆 Evening Live : ${PM_LIVE_START} – ${PM_LIVE_END}
+🌅 မနက် Live : ${AM_LIVE_START} – ${AM_LIVE_END}
+🌆 ညနေ Live : ${PM_LIVE_START} – ${PM_LIVE_END}
 
 🔴 Live = Red dot (Edit mode + Animation)
 ✅ Final = Check + Pin (Only after ${AM_FINAL_TIME} / ${PM_FINAL_TIME})
