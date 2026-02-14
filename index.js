@@ -7,7 +7,9 @@
  * ✅ Modern/Internet separate posts (9:30 AM & 2:00 PM MMT) — NO PIN
  * ✅ Single channel only
  * ✅ Admin-only: /forceam /forcepm /forcemodam /forcemodpm
- * ✅ /test /status /myid
+ * ✅ /start /test /status /myid
+ * ✅ Weekend + Holiday (SET Holiday) -> NO live/final/modint posts
+ * ✅ Holiday reason auto post at 10:00 AM MMT (once/day)
  * ✅ Rate-limit (429) retry + robust error handling
  *
  * ENV (Render):
@@ -24,7 +26,10 @@
  * - AM_LIVE_END   = 12:02   (default 12:02)
  * - PM_LIVE_START = 15:55   (default 15:55)
  * - PM_LIVE_END   = 16:31   (default 16:31)
+ * - HOLIDAY_NOTICE_TIME = 10:00 (default 10:00)
  */
+
+"use strict";
 
 const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
@@ -55,6 +60,9 @@ const PM_LIVE_END = process.env.PM_LIVE_END || "16:31";
 const AM_FINAL_TIME = "12:01";
 const PM_FINAL_TIME = "16:30";
 
+// Holiday notice time (MMT)
+const HOLIDAY_NOTICE_TIME = process.env.HOLIDAY_NOTICE_TIME || "10:00";
+
 if (!BOT_TOKEN || !CHANNEL_ID || !PUBLIC_URL) {
   console.error("❌ Missing ENV. Required: BOT_TOKEN, CHANNEL_ID, PUBLIC_URL");
   process.exit(1);
@@ -62,20 +70,20 @@ if (!BOT_TOKEN || !CHANNEL_ID || !PUBLIC_URL) {
 
 // ===== BOT (WEBHOOK) =====
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
+
 bot
   .setWebHook(WEBHOOK_URL)
   .then(() => console.log("✅ Webhook set:", WEBHOOK_URL))
   .catch((e) => console.error("❌ setWebHook error:", e.message));
 
 // ===== API ENDPOINTS =====
-const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb"; // POST dateVal, periodVal (am/pm)
-const HOME_URL = "https://mylucky2d3d.com/"; // for modern/internet HTML scrape
+const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb"; // POST dateVal, periodVal(am/pm)
+const HOME_URL = "https://mylucky2d3d.com/";
+const HOLIDAY_URL = "https://mylucky2d3d.com/set-holiday";
 
 // ===== UTIL: Myanmar Time (Asia/Yangon) =====
 function nowMMTDateObj() {
-  return new Date(
-    new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" })
-  );
+  return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
 }
 function ymdMMT() {
   const d = nowMMTDateObj();
@@ -93,6 +101,7 @@ function prettyMMT() {
       hour: "numeric",
       minute: "2-digit",
       hour12: true,
+      timeZone: "Asia/Yangon",
     })
     .replace(",", " •");
 }
@@ -117,6 +126,14 @@ function afterHM(hm) {
   const t = parseHMToMinutes(hm);
   if (t === null) return false;
   return now >= t;
+}
+
+// exact minute check (use range in tick to avoid missing)
+function isNowHM(hm) {
+  const now = minutesNowMMT();
+  const t = parseHMToMinutes(hm);
+  if (t === null) return false;
+  return now === t;
 }
 
 // ===== Animation (Bracket Bounce) =====
@@ -151,20 +168,12 @@ async function safeSendMessage(chatId, text, opts = {}) {
 }
 async function safeEditMessage(chatId, messageId, text, opts = {}) {
   try {
-    return await bot.editMessageText(text, {
-      chat_id: chatId,
-      message_id: messageId,
-      ...opts,
-    });
+    return await bot.editMessageText(text, { chat_id: chatId, message_id: messageId, ...opts });
   } catch (e) {
     const ra = tgRetryAfterSeconds(e);
     if (ra) {
       await sleep((ra + 1) * 1000);
-      return bot.editMessageText(text, {
-        chat_id: chatId,
-        message_id: messageId,
-        ...opts,
-      });
+      return bot.editMessageText(text, { chat_id: chatId, message_id: messageId, ...opts });
     }
     const desc = e?.response?.body?.description || "";
     if (desc.includes("message is not modified")) return null;
@@ -173,16 +182,12 @@ async function safeEditMessage(chatId, messageId, text, opts = {}) {
 }
 async function safePin(chatId, messageId) {
   try {
-    return await bot.pinChatMessage(chatId, messageId, {
-      disable_notification: true,
-    });
+    return await bot.pinChatMessage(chatId, messageId, { disable_notification: true });
   } catch (e) {
     const ra = tgRetryAfterSeconds(e);
     if (ra) {
       await sleep((ra + 1) * 1000);
-      return bot.pinChatMessage(chatId, messageId, {
-        disable_notification: true,
-      });
+      return bot.pinChatMessage(chatId, messageId, { disable_notification: true });
     }
     throw e;
   }
@@ -195,40 +200,28 @@ async function safeUnpin(chatId, messageId) {
   }
 }
 
-// ===== API CALLS (Live AM/PM) =====
+// ===== API CALLS =====
 async function postForm(url, paramsObj) {
   const form = new URLSearchParams();
-  for (const [k, v] of Object.entries(paramsObj)) {
-    form.append(k, String(v));
-  }
+  for (const [k, v] of Object.entries(paramsObj)) form.append(k, String(v));
 
-  const res = await axios.post(url, form.toString(), {
+  const { data } = await axios.post(url, form, {
     timeout: 20000,
-    validateStatus: () => true, // we handle non-200 ourselves
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-      Accept: "application/json, text/javascript, */*; q=0.01",
-      Origin: "https://mylucky2d3d.com",
-      Referer: "https://mylucky2d3d.com/2d",
-      "X-Requested-With": "XMLHttpRequest",
+      "Content-Type": "application/x-www-form-urlencoded",
       "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
+      "Accept": "application/json,text/plain,*/*",
+      "Accept-Language": "en-US,en;q=0.9",
     },
+    validateStatus: (s) => s >= 200 && s < 500,
   });
 
-  if (res.status !== 200) {
-    console.log("Live API raw status:", res.status);
-    if (typeof res.data === "string") {
-      console.log("Live API raw body (trunc):", res.data.slice(0, 200));
-    }
-    throw new Error(`Request failed with status code ${res.status}`);
+  // some cases return HTML error page
+  if (typeof data !== "object" || data === null) {
+    throw new Error("API_NON_JSON");
   }
-
-  if (!res.data || typeof res.data !== "object") {
-    throw new Error("Invalid response from live API");
-  }
-
-  return res.data;
+  return data;
 }
 
 async function fetchLive(periodVal /* 'am'|'pm' */) {
@@ -241,17 +234,17 @@ async function fetchModernInternetBlocks() {
   const headers = {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    Accept:
+    "Accept":
       "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9,my;q=0.8",
     "Cache-Control": "no-cache",
-    Pragma: "no-cache",
-    Referer: HOME_URL,
+    "Pragma": "no-cache",
+    "Referer": HOME_URL,
     "Upgrade-Insecure-Requests": "1",
   };
 
   let html = null;
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < 3; i++) {
     try {
       const res = await axios.get(HOME_URL, {
         timeout: 20000,
@@ -265,20 +258,19 @@ async function fetchModernInternetBlocks() {
         break;
       }
 
-      if (res.status === 406 || res.status === 403) {
-        console.log("Modern/Internet HTML status:", res.status);
+      if (res.status === 403 || res.status === 406) {
         await sleep(1200);
         continue;
       }
 
-      throw new Error(`HTTP_${res.status}`);
+      throw new Error(`HOME_HTTP_${res.status}`);
     } catch (e) {
-      if (i === 1) throw e;
+      if (i === 2) throw e;
       await sleep(1200);
     }
   }
 
-  if (!html) throw new Error("HTML_EMPTY");
+  if (!html) throw new Error("HOME_HTML_EMPTY");
 
   const $ = cheerio.load(html);
 
@@ -297,7 +289,7 @@ async function fetchModernInternetBlocks() {
     const nums = [];
     block.find(".modIntV").each((_, el) => {
       const v = $(el).text().trim();
-      if (/^\d{2,3}$/.test(v) || v === "--") nums.push(v);
+      if (/^\d{2}$/.test(v) || v === "--") nums.push(v);
     });
 
     return {
@@ -311,6 +303,193 @@ async function fetchModernInternetBlocks() {
     am930: pickBlock("9:30 AM"),
     pm200: pickBlock("2:00 PM"),
   };
+}
+
+// ===== Holiday / Weekend =====
+function getWeekdayMMT() {
+  // 0 Sun .. 6 Sat
+  return Number(
+    new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Yangon", weekday: "short" })
+      .format(nowMMTDateObj())
+      .startsWith("Sun")
+      ? 0
+      : new Date(nowMMTDateObj().toLocaleString("en-US", { timeZone: "Asia/Yangon" })).getDay()
+  );
+}
+
+function weekdayNameFromIndex(i) {
+  return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][i] || "Unknown";
+}
+
+function parseDateToYMD(text) {
+  const s = String(text || "").trim();
+
+  // yyyy-mm-dd
+  const iso = s.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+
+  // dd/mm/yyyy
+  const dmy = s.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/);
+  if (dmy) {
+    const dd = String(dmy[1]).padStart(2, "0");
+    const mm = String(dmy[2]).padStart(2, "0");
+    const yyyy = dmy[3];
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  // 11/Feb/2026 or 11 Feb 2026
+  const mon = s.match(/\b(\d{1,2})\s*[-/ ]\s*([A-Za-z]{3,9})\s*[-/ ]\s*(\d{4})\b/);
+  if (mon) {
+    const dd = String(mon[1]).padStart(2, "0");
+    const mName = mon[2].toLowerCase().slice(0, 3);
+    const yyyy = mon[3];
+    const map = {
+      jan: "01",
+      feb: "02",
+      mar: "03",
+      apr: "04",
+      may: "05",
+      jun: "06",
+      jul: "07",
+      aug: "08",
+      sep: "09",
+      oct: "10",
+      nov: "11",
+      dec: "12",
+    };
+    const mm = map[mName];
+    if (mm) return `${yyyy}-${mm}-${dd}`;
+  }
+
+  return null;
+}
+
+let holidayCache = {
+  fetchedAt: 0,
+  mapByYMD: new Map(), // ymd -> name
+};
+
+async function fetchHolidayMap() {
+  const now = Date.now();
+  // refresh every 6 hours
+  if (holidayCache.fetchedAt && now - holidayCache.fetchedAt < 6 * 60 * 60 * 1000) {
+    return holidayCache.mapByYMD;
+  }
+
+  const headers = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,my;q=0.8",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Referer": HOME_URL,
+  };
+
+  const res = await axios.get(HOLIDAY_URL, {
+    timeout: 20000,
+    headers,
+    responseType: "text",
+    validateStatus: (s) => s >= 200 && s < 500,
+  });
+
+  if (res.status !== 200 || typeof res.data !== "string") {
+    // if fail, keep old cache (if any)
+    holidayCache.fetchedAt = now;
+    return holidayCache.mapByYMD;
+  }
+
+  const $ = cheerio.load(res.data);
+  const m = new Map();
+
+  // Try table rows first
+  $("tr").each((_, tr) => {
+    const tds = $(tr).find("td");
+    if (!tds || tds.length < 1) return;
+
+    const rowText = $(tr).text().replace(/\s+/g, " ").trim();
+    const ymd = parseDateToYMD(rowText);
+    if (!ymd) return;
+
+    // try holiday name (last td text)
+    let name = "";
+    if (tds.length >= 2) {
+      name = $(tds[tds.length - 1]).text().replace(/\s+/g, " ").trim();
+    } else {
+      name = rowText;
+    }
+
+    if (name) m.set(ymd, name);
+  });
+
+  // Fallback: any visible blocks with date + text
+  if (m.size === 0) {
+    const full = $.text().split("\n").map((x) => x.trim()).filter(Boolean);
+    for (const line of full) {
+      const ymd = parseDateToYMD(line);
+      if (ymd) {
+        m.set(ymd, line);
+      }
+    }
+  }
+
+  holidayCache.fetchedAt = now;
+  holidayCache.mapByYMD = m;
+  return m;
+}
+
+// per-day result cache
+let marketClosedCache = {
+  ymd: null,
+  result: null,
+};
+
+async function isMarketClosedToday() {
+  const today = ymdMMT();
+  if (marketClosedCache.ymd === today && marketClosedCache.result) {
+    return marketClosedCache.result;
+  }
+
+  // Weekend in MMT
+  const dayIdx = nowMMTDateObj().getDay(); // 0 Sun .. 6 Sat
+  if (dayIdx === 0 || dayIdx === 6) {
+    const reason = `Weekend (${weekdayNameFromIndex(dayIdx)})`;
+    const out = { closed: true, reason };
+    marketClosedCache = { ymd: today, result: out };
+    return out;
+  }
+
+  // Holiday from site
+  try {
+    const map = await fetchHolidayMap();
+    const name = map.get(today);
+    if (name) {
+      const out = { closed: true, reason: `SET Holiday — ${name}` };
+      marketClosedCache = { ymd: today, result: out };
+      return out;
+    }
+  } catch {
+    // ignore: if holiday fetch fails, still allow market
+  }
+
+  const out = { closed: false, reason: "" };
+  marketClosedCache = { ymd: today, result: out };
+  return out;
+}
+
+function holidayNoticeTemplate(reason) {
+  return (
+`╭──────────────╮
+│ 🛑 Market 2D Closed │
+╰──────────────╯
+📅 ${prettyMMT()}
+
+ဒီနေ့ 2D မထွက်ပါဘူး။
+
+အကြောင်းရင်း 👉 *${reason}*
+
+နောက်နေ့ market ပြန်ဖွင့်တာနဲ့ Live ပြန်တင်ပေးပါမယ် ✅`
+  );
 }
 
 // ===== MESSAGE TEMPLATES =====
@@ -387,6 +566,9 @@ let finalDonePM = false;
 let modIntPostedAM = false;
 let modIntPostedPM = false;
 
+// Holiday notice (once/day)
+let holidayNoticePosted = false;
+
 // ===== DAILY RESET =====
 function resetDailyStateIfNeeded() {
   const today = ymdMMT();
@@ -405,6 +587,11 @@ function resetDailyStateIfNeeded() {
     modIntPostedAM = false;
     modIntPostedPM = false;
 
+    holidayNoticePosted = false;
+
+    // reset per-day market cache too
+    marketClosedCache = { ymd: null, result: null };
+
     console.log("✅ Daily state reset:", stateDate);
   }
 }
@@ -412,7 +599,7 @@ function resetDailyStateIfNeeded() {
 // ===== FINAL GUARDS =====
 // Only treat as Final if:
 // - fiStatus === "yes"
-// - AND (time is after official final time) OR playDtm includes "12:01" / "16:30"
+// - AND (time is after official final time) OR playDtm includes "12:01"/"16:30"
 function looksLikeFinalTime(period, playDtm) {
   const dtm = String(playDtm || "");
   if (period === "am") {
@@ -432,13 +619,7 @@ async function upsertLive(period, data) {
   const label = isAM ? "🌅 MORNING" : "🌆 EVENING";
   const opts = { parse_mode: "Markdown" };
 
-  const text = liveMessageTemplate(
-    label,
-    data.playLucky,
-    data.playSet,
-    data.playValue,
-    data.playDtm
-  );
+  const text = liveMessageTemplate(label, data.playLucky, data.playSet, data.playValue, data.playDtm);
 
   if (isAM) {
     if (!liveMsgIdAM) {
@@ -462,13 +643,7 @@ async function postFinal(period, data) {
   const label = isAM ? "🌅 MORNING" : "🌆 EVENING";
   const opts = { parse_mode: "Markdown" };
 
-  const text = finalMessageTemplate(
-    label,
-    data.playLucky,
-    data.playSet,
-    data.playValue,
-    data.playDtm
-  );
+  const text = finalMessageTemplate(label, data.playLucky, data.playSet, data.playValue, data.playDtm);
   const sent = await safeSendMessage(CHANNEL_ID, text, opts);
 
   // unpin previous final for that period
@@ -512,12 +687,13 @@ async function postModInt(which /* "am930" | "pm200" */) {
 async function tickLive() {
   resetDailyStateIfNeeded();
 
+  // ✅ closed day -> no live/final/modint
+  const closed = await isMarketClosedToday();
+  if (closed?.closed) return;
+
   // Morning window
   if (LIVE_ENABLE_AM && inRangeMinutes(AM_LIVE_START, AM_LIVE_END) && !finalDoneAM) {
-    const data = await fetchLive("am").catch((e) => {
-      console.log("AM live fetch error:", e.message);
-      return null;
-    });
+    const data = await fetchLive("am").catch(() => null);
     if (data && data.status === "success") {
       if (data.fiStatus === "yes" && looksLikeFinalTime("am", data.playDtm)) {
         await postFinal("am", data);
@@ -529,10 +705,7 @@ async function tickLive() {
 
   // Evening window
   if (LIVE_ENABLE_PM && inRangeMinutes(PM_LIVE_START, PM_LIVE_END) && !finalDonePM) {
-    const data = await fetchLive("pm").catch((e) => {
-      console.log("PM live fetch error:", e.message);
-      return null;
-    });
+    const data = await fetchLive("pm").catch(() => null);
     if (data && data.status === "success") {
       if (data.fiStatus === "yes" && looksLikeFinalTime("pm", data.playDtm)) {
         await postFinal("pm", data);
@@ -546,18 +719,28 @@ async function tickLive() {
 async function tickModInt() {
   resetDailyStateIfNeeded();
 
+  const closed = await isMarketClosedToday();
+
+  // ✅ 10:00 AM MMT -> Holiday/Weekend notice (once/day)
+  // Use range 10:00–10:01 so it won't miss due to interval drift
+  if (!holidayNoticePosted && inRangeMinutes(HOLIDAY_NOTICE_TIME, "10:01")) {
+    if (closed?.closed) {
+      await safeSendMessage(CHANNEL_ID, holidayNoticeTemplate(closed.reason), { parse_mode: "Markdown" });
+      holidayNoticePosted = true;
+    }
+  }
+
+  // closed day -> do not post mod/int
+  if (closed?.closed) return;
+
   // 9:30 AM window (9:30–9:33)
   if (inRangeMinutes("09:30", "09:33")) {
-    await postModInt("am930").catch((e) =>
-      console.log("ModInt AM error:", e.message)
-    );
+    await postModInt("am930").catch(() => null);
   }
 
   // 2:00 PM window (14:00–14:03)
   if (inRangeMinutes("14:00", "14:03")) {
-    await postModInt("pm200").catch((e) =>
-      console.log("ModInt PM error:", e.message)
-    );
+    await postModInt("pm200").catch(() => null);
   }
 }
 
@@ -578,6 +761,9 @@ function isAdmin(msg) {
 async function denyNotAdmin(chatId) {
   return safeSendMessage(chatId, "⛔ ဒီ command ကို Admin ပဲသုံးလို့ရပါတယ်။");
 }
+async function denyClosedDay(chatId, reason) {
+  return safeSendMessage(chatId, `🛑 ဒီနေ့ Market ပိတ်ပါတယ်။\nအကြောင်းရင်း: ${reason}`);
+}
 
 // ===== COMMANDS =====
 bot.onText(/\/start/, async (msg) => {
@@ -596,14 +782,14 @@ bot.onText(/\/start/, async (msg) => {
 🧠 Modern/Internet (Separate posts)
 🕤 9:30 AM  •  🕑 2:00 PM
 
-2D ဂဏန်း တိုက်ရိုက်ကြည့်ရန်
+🛑 Weekend + Holiday = NO posts
+📣 Holiday Notice = ${HOLIDAY_NOTICE_TIME} AM (MMT)
+
 Channel ကို join ပါ 👇`;
 
   await safeSendMessage(chatId, text, {
     reply_markup: {
-      inline_keyboard: [
-        [{ text: "🔔 Join 2D Live Channel", url: "https://t.me/Live2DSet" }],
-      ],
+      inline_keyboard: [[{ text: "🔔 Join 2D Live Channel", url: "https://t.me/Live2DSet" }]],
     },
   });
 });
@@ -618,10 +804,14 @@ bot.onText(/\/test/, async (msg) => {
 });
 
 bot.onText(/\/status/, async (msg) => {
+  const closed = await isMarketClosedToday().catch(() => ({ closed: false, reason: "" }));
   const s =
 `📌 Bot Status
 📅 Date (MMT): ${ymdMMT()}
 ⏱ Edit interval: ${EDIT_EVERY_MS}ms
+
+🛑 Closed today: ${closed.closed ? "YES" : "NO"}
+📣 Close reason: ${closed.closed ? closed.reason : "-"}
 
 🌅 AM live msg: ${liveMsgIdAM ? "YES" : "NO"}
 🌆 PM live msg: ${liveMsgIdPM ? "YES" : "NO"}
@@ -631,6 +821,8 @@ bot.onText(/\/status/, async (msg) => {
 
 🧠 Mod/Int AM posted: ${modIntPostedAM ? "YES" : "NO"}
 🧠 Mod/Int PM posted: ${modIntPostedPM ? "YES" : "NO"}
+
+📣 Holiday notice posted: ${holidayNoticePosted ? "YES" : "NO"}
 
 🔐 Admin ID set: ${ADMIN_ID ? "YES" : "NO"}
 📢 Channel: ${CHANNEL_ID}`;
@@ -642,18 +834,18 @@ bot.onText(/\/myid/, async (msg) => {
   await safeSendMessage(msg.chat.id, `🆔 Your Telegram ID: ${msg.from.id}`);
 });
 
-// Admin: force live/final (AM)
+// Admin: force live/final (blocked on closed day)
 bot.onText(/\/forceam/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
 
+  const closed = await isMarketClosedToday().catch(() => ({ closed: false, reason: "" }));
+  if (closed.closed) return denyClosedDay(chatId, closed.reason);
+
   try {
     const data = await fetchLive("am");
     if (!data || data.status !== "success") {
-      return safeSendMessage(
-        chatId,
-        `⚠️ AM fetch မရပါ (status: ${data?.status || "unknown"})`
-      );
+      return safeSendMessage(chatId, `⚠️ AM fetch မရပါ (status: ${data?.status || "unknown"})`);
     }
 
     if (data.fiStatus === "yes" && looksLikeFinalTime("am", data.playDtm)) {
@@ -668,18 +860,17 @@ bot.onText(/\/forceam/, async (msg) => {
   }
 });
 
-// Admin: force live/final (PM)
 bot.onText(/\/forcepm/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
 
+  const closed = await isMarketClosedToday().catch(() => ({ closed: false, reason: "" }));
+  if (closed.closed) return denyClosedDay(chatId, closed.reason);
+
   try {
     const data = await fetchLive("pm");
     if (!data || data.status !== "success") {
-      return safeSendMessage(
-        chatId,
-        `⚠️ PM fetch မရပါ (status: ${data?.status || "unknown"})`
-      );
+      return safeSendMessage(chatId, `⚠️ PM fetch မရပါ (status: ${data?.status || "unknown"})`);
     }
 
     if (data.fiStatus === "yes" && looksLikeFinalTime("pm", data.playDtm)) {
@@ -694,33 +885,34 @@ bot.onText(/\/forcepm/, async (msg) => {
   }
 });
 
-// Admin: force Modern/Internet AM
+// Admin: force modern/internet posts (NO PIN) (blocked on closed day)
 bot.onText(/\/forcemodam/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
+
+  const closed = await isMarketClosedToday().catch(() => ({ closed: false, reason: "" }));
+  if (closed.closed) return denyClosedDay(chatId, closed.reason);
+
   try {
-    modIntPostedAM = false; // allow re-post
+    modIntPostedAM = false;
     await postModInt("am930");
-    await safeSendMessage(
-      chatId,
-      "✅ /forcemodam → Posted 9:30 AM Modern/Internet"
-    );
+    await safeSendMessage(chatId, "✅ /forcemodam → Posted 9:30 AM Modern/Internet");
   } catch (e) {
     await safeSendMessage(chatId, `❌ /forcemodam error: ${e.message}`);
   }
 });
 
-// Admin: force Modern/Internet PM
 bot.onText(/\/forcemodpm/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
+
+  const closed = await isMarketClosedToday().catch(() => ({ closed: false, reason: "" }));
+  if (closed.closed) return denyClosedDay(chatId, closed.reason);
+
   try {
-    modIntPostedPM = false; // allow re-post
+    modIntPostedPM = false;
     await postModInt("pm200");
-    await safeSendMessage(
-      chatId,
-      "✅ /forcemodpm → Posted 2:00 PM Modern/Internet"
-    );
+    await safeSendMessage(chatId, "✅ /forcemodpm → Posted 2:00 PM Modern/Internet");
   } catch (e) {
     await safeSendMessage(chatId, `❌ /forcemodpm error: ${e.message}`);
   }
@@ -743,8 +935,9 @@ http
       return;
     }
 
+    // health check
     res.writeHead(200);
     res.end("Bot is running");
   })
   .listen(PORT, () => console.log("✅ Server running on port", PORT));
-
+```0
