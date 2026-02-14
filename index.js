@@ -940,4 +940,3 @@ http
     res.end("Bot is running");
   })
   .listen(PORT, () => console.log("✅ Server running on port", PORT));
-```0
