@@ -2,15 +2,13 @@
  * Myanmar 2D Live Bot — MYLUCKY2D3D (WEBHOOK / Render)
  * ===================================================
  * ✅ Live updates via EDIT mode every 5s (no spam)
- * ✅ Live animation (Bracket Bounce): ⟪82⟫ → ⟨82⟩ → 〔82〕 → 【82】
- * ✅ Final result ✅ + Pin (ONLY after final time + fiStatus === "yes")
+ * ✅ Pro Live animation (heartbeat + dot + bracket + ticker bar)
+ * ✅ Final result ✅ + Pin (ONLY after final time + fiStatus === "yes") — Final is NORMAL number (no animation)
  * ✅ Modern/Internet separate posts (9:30 AM & 2:00 PM MMT) — NO PIN
- * ✅ Single channel only
+ * ✅ Weekend + Holiday (SET Holiday) -> NO live/final/modint posts
+ * ✅ Holiday/Weekend reason auto post at 10:00 AM MMT (once/day)
  * ✅ Admin-only: /forceam /forcepm /forcemodam /forcemodpm /forceholiday
  * ✅ /start /test /status /myid
- * ✅ Weekend + Holiday (SET Holiday) -> NO live/final/modint posts
- * ✅ Holiday reason auto post at HOLIDAY_NOTICE_TIME (default 10:00 AM MMT) once/day
- * ✅ Better error messages (API_HTTP_406 etc.)
  * ✅ Rate-limit (429) retry + robust error handling
  *
  * ENV (Render):
@@ -28,6 +26,10 @@
  * - PM_LIVE_START = 15:55   (default 15:55)
  * - PM_LIVE_END   = 16:31   (default 16:31)
  * - HOLIDAY_NOTICE_TIME = 10:00 (default 10:00)
+ * - MODINT_AM_START = 09:30 (default 09:30)
+ * - MODINT_AM_END   = 09:33 (default 09:33)
+ * - MODINT_PM_START = 14:00 (default 14:00)
+ * - MODINT_PM_END   = 14:03 (default 14:03)
  */
 
 "use strict";
@@ -64,10 +66,11 @@ const PM_FINAL_TIME = "16:30";
 // Holiday notice time (MMT)
 const HOLIDAY_NOTICE_TIME = process.env.HOLIDAY_NOTICE_TIME || "10:00";
 
-// ===== URLs =====
-const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb"; // POST dateVal, periodVal(am/pm)
-const HOME_URL = "https://mylucky2d3d.com/";
-const HOLIDAY_URL = "https://mylucky2d3d.com/set-holiday";
+// Mod/Int windows
+const MODINT_AM_START = process.env.MODINT_AM_START || "09:30";
+const MODINT_AM_END = process.env.MODINT_AM_END || "09:33";
+const MODINT_PM_START = process.env.MODINT_PM_START || "14:00";
+const MODINT_PM_END = process.env.MODINT_PM_END || "14:03";
 
 if (!BOT_TOKEN || !CHANNEL_ID || !PUBLIC_URL) {
   console.error("❌ Missing ENV. Required: BOT_TOKEN, CHANNEL_ID, PUBLIC_URL");
@@ -76,10 +79,16 @@ if (!BOT_TOKEN || !CHANNEL_ID || !PUBLIC_URL) {
 
 // ===== BOT (WEBHOOK) =====
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
+
 bot
   .setWebHook(WEBHOOK_URL)
   .then(() => console.log("✅ Webhook set:", WEBHOOK_URL))
   .catch((e) => console.error("❌ setWebHook error:", e.message));
+
+// ===== API ENDPOINTS =====
+const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb"; // POST dateVal, periodVal(am/pm)
+const HOME_URL = "https://mylucky2d3d.com/";
+const HOLIDAY_URL = "https://mylucky2d3d.com/set-holiday";
 
 // ===== UTIL: Myanmar Time (Asia/Yangon) =====
 function nowMMTDateObj() {
@@ -114,11 +123,6 @@ function parseHMToMinutes(hm) {
   if (Number.isNaN(h) || Number.isNaN(m)) return null;
   return h * 60 + m;
 }
-function minutesToHM(totalMin) {
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-}
 function inRangeMinutes(startHM, endHM) {
   const now = minutesNowMMT();
   const s = parseHMToMinutes(startHM);
@@ -132,19 +136,38 @@ function afterHM(hm) {
   if (t === null) return false;
   return now >= t;
 }
-function weekdayNameMM(i) {
-  // 0 Sun .. 6 Sat
-  return ["တနင်္ဂနွေနေ့", "တနင်္လာနေ့", "အင်္ဂါနေ့", "ဗုဒ္ဓဟူးနေ့", "ကြာသပတေးနေ့", "သောကြနေ့", "စနေနေ့"][i] || "Unknown";
-}
 
-// ===== Animation (Bracket Bounce) =====
+// ===== Pro Live Animation Helpers =====
 let animIdx = 0;
 function tickAnim() {
-  animIdx = (animIdx + 1) % 4;
+  animIdx = (animIdx + 1) % 60;
+}
+function livePulseDot() {
+  const dots = ["🔴", "🟩", "🟡", "🟪"];
+  return dots[animIdx % dots.length];
+}
+function heartPulse() {
+  const hearts = ["💛", "❤️", "💚", "💖"];
+  return hearts[animIdx % hearts.length];
 }
 function bracketBounce(n) {
-  const frames = [`⟪${n}⟫`, `⟨${n}⟩`, `〔${n}〕`, `【${n}】`];
+  const frames = [
+    `⟪${n}⟫`, `⟨${n}⟩`, `(${n})`, `⟮${n}⟯`,
+    `〔${n}〕`, `{${n}}`, `【${n}】`, `〖${n}〗`,
+    `「${n}」`, `『${n}』`
+  ];
   return frames[animIdx % frames.length];
+}
+function tickerBar() {
+  const bars = ["▁","▂","▃","▄","▅","▆","▇","█","▇","▆","▅","▄","▃","▂"];
+  return bars[animIdx % bars.length];
+}
+function fmtNum(x) {
+  const s = String(x ?? "").trim();
+  if (!s || s === "--") return "--";
+  const n = Number(s.replace(/,/g, ""));
+  if (Number.isNaN(n)) return s;
+  return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
 // ===== SAFE HELPERS (rate limit retry) =====
@@ -206,7 +229,7 @@ async function postForm(url, paramsObj) {
   const form = new URLSearchParams();
   for (const [k, v] of Object.entries(paramsObj)) form.append(k, String(v));
 
-  const res = await axios.post(url, form, {
+  const { data } = await axios.post(url, form, {
     timeout: 20000,
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -214,17 +237,10 @@ async function postForm(url, paramsObj) {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
       "Accept": "application/json,text/plain,*/*",
       "Accept-Language": "en-US,en;q=0.9",
-      "Origin": "https://mylucky2d3d.com",
-      "Referer": "https://mylucky2d3d.com/",
     },
     validateStatus: (s) => s >= 200 && s < 500,
   });
 
-  if (res.status !== 200) {
-    throw new Error(`API_HTTP_${res.status}`);
-  }
-
-  const data = res.data;
   if (typeof data !== "object" || data === null) {
     throw new Error("API_NON_JSON");
   }
@@ -290,6 +306,7 @@ async function fetchModernInternetBlocks() {
         block = $(el);
       }
     });
+
     if (!block) return null;
 
     const nums = [];
@@ -311,15 +328,16 @@ async function fetchModernInternetBlocks() {
   };
 }
 
-// ===== Holiday parsing =====
+// ===== Holiday helpers =====
+function weekdayNameFromIndex(i) {
+  return ["တနင်္ဂနွေနေ့", "တနင်္လာနေ့", "အင်္ဂါနေ့", "ဗုဒ္ဓဟူးနေ့", "ကြာသပတေးနေ့", "သောကြနေ့", "စနေနေ့"][i] || "Unknown";
+}
 function parseDateToYMD(text) {
   const s = String(text || "").trim();
 
-  // yyyy-mm-dd
   const iso = s.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
 
-  // dd/mm/yyyy
   const dmy = s.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/);
   if (dmy) {
     const dd = String(dmy[1]).padStart(2, "0");
@@ -328,41 +346,22 @@ function parseDateToYMD(text) {
     return `${yyyy}-${mm}-${dd}`;
   }
 
-  // 11/Feb/2026 or 11 Feb 2026
   const mon = s.match(/\b(\d{1,2})\s*[-/ ]\s*([A-Za-z]{3,9})\s*[-/ ]\s*(\d{4})\b/);
   if (mon) {
     const dd = String(mon[1]).padStart(2, "0");
     const mName = mon[2].toLowerCase().slice(0, 3);
     const yyyy = mon[3];
-    const map = {
-      jan: "01",
-      feb: "02",
-      mar: "03",
-      apr: "04",
-      may: "05",
-      jun: "06",
-      jul: "07",
-      aug: "08",
-      sep: "09",
-      oct: "10",
-      nov: "11",
-      dec: "12",
-    };
+    const map = { jan:"01",feb:"02",mar:"03",apr:"04",may:"05",jun:"06",jul:"07",aug:"08",sep:"09",oct:"10",nov:"11",dec:"12" };
     const mm = map[mName];
     if (mm) return `${yyyy}-${mm}-${dd}`;
   }
-
   return null;
 }
 
-let holidayCache = {
-  fetchedAt: 0,
-  mapByYMD: new Map(), // ymd -> name
-};
+let holidayCache = { fetchedAt: 0, mapByYMD: new Map() };
 
 async function fetchHolidayMap() {
   const now = Date.now();
-  // refresh every 6 hours
   if (holidayCache.fetchedAt && now - holidayCache.fetchedAt < 6 * 60 * 60 * 1000) {
     return holidayCache.mapByYMD;
   }
@@ -385,7 +384,6 @@ async function fetchHolidayMap() {
   });
 
   if (res.status !== 200 || typeof res.data !== "string") {
-    // keep old cache
     holidayCache.fetchedAt = now;
     return holidayCache.mapByYMD;
   }
@@ -399,13 +397,12 @@ async function fetchHolidayMap() {
     if (!ymd) return;
 
     const tds = $(tr).find("td");
-    let name = rowText;
-
+    let name = "";
     if (tds && tds.length >= 2) {
-      const last = $(tds[tds.length - 1]).text().replace(/\s+/g, " ").trim();
-      if (last) name = last;
+      name = $(tds[tds.length - 1]).text().replace(/\s+/g, " ").trim();
+    } else {
+      name = rowText;
     }
-
     if (name) m.set(ymd, name);
   });
 
@@ -422,21 +419,15 @@ async function fetchHolidayMap() {
   return m;
 }
 
-// per-day result cache
-let marketClosedCache = {
-  ymd: null,
-  result: null,
-};
+let marketClosedCache = { ymd: null, result: null };
 
 async function isMarketClosedToday() {
   const today = ymdMMT();
-  if (marketClosedCache.ymd === today && marketClosedCache.result) {
-    return marketClosedCache.result;
-  }
+  if (marketClosedCache.ymd === today && marketClosedCache.result) return marketClosedCache.result;
 
   const dayIdx = nowMMTDateObj().getDay(); // 0 Sun .. 6 Sat
   if (dayIdx === 0 || dayIdx === 6) {
-    const out = { closed: true, reason: `Weekend (${weekdayNameMM(dayIdx)})` };
+    const out = { closed: true, reason: `Weekend (${weekdayNameFromIndex(dayIdx)})` };
     marketClosedCache = { ymd: today, result: out };
     return out;
   }
@@ -450,7 +441,7 @@ async function isMarketClosedToday() {
       return out;
     }
   } catch {
-    // if holiday fetch fails -> assume open
+    // if holiday fetch fails -> treat as open (safe)
   }
 
   const out = { closed: false, reason: "" };
@@ -469,33 +460,33 @@ function holidayNoticeTemplate(reason) {
 
 အကြောင်းရင်း 👉 *${reason}*
 
-နောက်နေ့ market ပြန်ဖွင့်တာနဲ့ Live ပြန်တင်ပေးပါမယ် ✅`
+နောက်နေ့ 2D market ပြန်ဖွင့်တာနဲ့ Live ပြန်တင်ပေးပါမယ် ✅`
   );
 }
 
 // ===== MESSAGE TEMPLATES =====
 function liveMessageTemplate(label, liveNum, set, value, upd) {
   tickAnim();
-  const animatedNum = bracketBounce(liveNum || "--");
+  const n = bracketBounce(liveNum || "--");
+  const dot = livePulseDot();
+  const heart = heartPulse();
 
   return (
-`╭───────────╮
-│ ${label}│တိုက်ရိုက်Live
-╰───────────╯
+`╭─────────────╮
+│ ${heart} ${label}│တိုက်ရိုက်Live
+╰─────────────╯
 📅 ${prettyMMT()}
 
-🎯 *Now 2D* : 🔴 *${animatedNum}*
+🎯 *Now 2D* : ${dot} *${n}*
 
-📊 *SET*
-🟢 *${set || "--"}*
-
-💰 *VALUE*
-🔵 *${value || "--"}*
+🟢 *SET*   ${tickerBar()}  *${fmtNum(set)}*
+🔵 *VALUE* ${tickerBar()}  *${fmtNum(value)}*
 
 🕒 Updated: *${upd || "--"}*`
   );
 }
 
+// Final stays NORMAL (no animation)
 function finalMessageTemplate(label, finalNum, set, value, upd) {
   return (
 `╭───────────╮
@@ -530,21 +521,17 @@ ${timeTitle}
 
 // ===== STATE (per day) =====
 let stateDate = ymdMMT();
-
 let liveMsgIdAM = null;
 let liveMsgIdPM = null;
-
 let pinnedFinalIdAM = null;
 let pinnedFinalIdPM = null;
-
 let finalDoneAM = false;
 let finalDonePM = false;
-
 let modIntPostedAM = false;
 let modIntPostedPM = false;
-
 let holidayNoticePosted = false;
 
+// ===== DAILY RESET =====
 function resetDailyStateIfNeeded() {
   const today = ymdMMT();
   if (today !== stateDate) {
@@ -552,7 +539,6 @@ function resetDailyStateIfNeeded() {
 
     liveMsgIdAM = null;
     liveMsgIdPM = null;
-
     pinnedFinalIdAM = null;
     pinnedFinalIdPM = null;
 
@@ -570,7 +556,7 @@ function resetDailyStateIfNeeded() {
   }
 }
 
-// ===== FINAL GUARD =====
+// ===== FINAL GUARDS =====
 function looksLikeFinalTime(period, playDtm) {
   const dtm = String(playDtm || "");
   if (period === "am") {
@@ -683,31 +669,26 @@ async function tickLive() {
   }
 }
 
-async function tickModInt() {
+async function tickModIntAndHolidayNotice() {
   resetDailyStateIfNeeded();
 
-  const closed = await isMarketClosedToday().catch(() => ({ closed: false, reason: "" }));
+  const closed = await isMarketClosedToday();
 
-  // ✅ Holiday notice window = HOLIDAY_NOTICE_TIME to +3min (to avoid missing)
-  if (!holidayNoticePosted && closed?.closed) {
-    const startMin = parseHMToMinutes(HOLIDAY_NOTICE_TIME);
-    if (startMin !== null) {
-      const endMin = startMin + 3;
-      const endHM = minutesToHM(endMin);
-      if (inRangeMinutes(HOLIDAY_NOTICE_TIME, endHM)) {
-        await safeSendMessage(CHANNEL_ID, holidayNoticeTemplate(closed.reason), { parse_mode: "Markdown" });
-        holidayNoticePosted = true;
-      }
+  // 10:00–10:01 holiday notice once/day
+  if (!holidayNoticePosted && inRangeMinutes(HOLIDAY_NOTICE_TIME, "10:01")) {
+    if (closed?.closed) {
+      await safeSendMessage(CHANNEL_ID, holidayNoticeTemplate(closed.reason), { parse_mode: "Markdown" });
+      holidayNoticePosted = true;
     }
   }
 
   if (closed?.closed) return;
 
-  if (inRangeMinutes("09:30", "09:33")) {
+  if (inRangeMinutes(MODINT_AM_START, MODINT_AM_END)) {
     await postModInt("am930").catch(() => null);
   }
 
-  if (inRangeMinutes("14:00", "14:03")) {
+  if (inRangeMinutes(MODINT_PM_START, MODINT_PM_END)) {
     await postModInt("pm200").catch(() => null);
   }
 }
@@ -718,7 +699,7 @@ setInterval(() => {
 }, EDIT_EVERY_MS);
 
 setInterval(() => {
-  tickModInt().catch((e) => console.log("ModInt tick error:", e.message));
+  tickModIntAndHolidayNotice().catch((e) => console.log("ModInt tick error:", e.message));
 }, 20 * 1000);
 
 // ===== ADMIN HELPERS =====
@@ -730,7 +711,7 @@ async function denyNotAdmin(chatId) {
   return safeSendMessage(chatId, "⛔ ဒီ command ကို Admin ပဲသုံးလို့ရပါတယ်။");
 }
 async function denyClosedDay(chatId, reason) {
-  return safeSendMessage(chatId, `🛑 ဒီနေ့ Market ပိတ်ပါတယ်။\nအကြောင်းရင်း: ${reason}`);
+  return safeSendMessage(chatId, `🛑 ဒီနေ့ 2D Market ပိတ်ပါတယ်။\nအကြောင်းရင်းက: ${reason}`);
 }
 
 // ===== COMMANDS =====
@@ -744,7 +725,7 @@ bot.onText(/\/start/, async (msg) => {
 🌅 မနက် Live : ${AM_LIVE_START} – ${AM_LIVE_END}
 🌆 ညနေ Live : ${PM_LIVE_START} – ${PM_LIVE_END}
 
-🔴 Live = Red dot (Edit mode + Animation)
+🔴 Live = Edit mode + Pro animation
 ✅ Final = Check + Pin (Only after ${AM_FINAL_TIME} / ${PM_FINAL_TIME})
 
 🧠 Modern/Internet (Separate posts)
@@ -853,7 +834,7 @@ bot.onText(/\/forcepm/, async (msg) => {
   }
 });
 
-// Admin: force modern/internet posts (blocked on closed day)
+// Admin: force modern/internet (blocked on closed day)
 bot.onText(/\/forcemodam/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
@@ -886,21 +867,20 @@ bot.onText(/\/forcemodpm/, async (msg) => {
   }
 });
 
-// ✅ Admin: force holiday notice (post reason now) — allowed even if not in notice time
+// Admin: force holiday notice (even if not 10:00)
 bot.onText(/\/forceholiday/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
 
-  try {
-    const closed = await isMarketClosedToday().catch(() => ({ closed: false, reason: "" }));
-    if (!closed.closed) {
-      return safeSendMessage(chatId, "✅ ဒီနေ့ Market ပိတ်မဟုတ်ပါဘူး။");
-    }
+  const closed = await isMarketClosedToday().catch(() => ({ closed: false, reason: "" }));
+  if (!closed.closed) {
+    return safeSendMessage(chatId, "✅ Today is NOT closed (Weekend/Holiday မဟုတ်ပါ)။");
+  }
 
+  try {
     await safeSendMessage(CHANNEL_ID, holidayNoticeTemplate(closed.reason), { parse_mode: "Markdown" });
     holidayNoticePosted = true;
-
-    await safeSendMessage(chatId, "✅ /forceholiday → Holiday notice ကို channel ထဲ ပို့ပြီးပါပြီ");
+    await safeSendMessage(chatId, "✅ /forceholiday → Holiday notice posted to channel");
   } catch (e) {
     await safeSendMessage(chatId, `❌ /forceholiday error: ${e.message}`);
   }
@@ -923,7 +903,6 @@ http
       return;
     }
 
-    // health check
     res.writeHead(200);
     res.end("Bot is running");
   })
