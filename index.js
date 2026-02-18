@@ -475,12 +475,14 @@ function liveMessageTemplate(label, liveNum, set, value, upd) {
 `╭─────────────╮
 │ ${heart} ${label}│တိုက်ရိုက်Live
 ╰─────────────╯
-📅 ${prettyMMT()}
+📅 ${upd || "--"}
 
 🎯 *Now 2D* : ${dot} *${n}*
 
 🟢 *SET*   ${tickerBar()}  *${fmtNum(set)}*
 🔵 *VALUE* ${tickerBar()}  *${fmtNum(value)}*
+
+🤖 *@Thai2dLiveBot ဖြင့်ဖန်တီးထားသည်*
 
 🕒 Updated: *${upd || "--"}*`
   );
@@ -492,7 +494,7 @@ function finalMessageTemplate(label, finalNum, set, value, upd) {
 `╭───────────╮
 │ ${label}│ထွက်ဂဏန်း
 ╰───────────╯
-📅 ${prettyMMT()}
+📅 ${upd || "--"}
 
 🎯 *Now 2D* : *${finalNum || "--"}* ✅
 
@@ -501,6 +503,8 @@ function finalMessageTemplate(label, finalNum, set, value, upd) {
 
 💰 *VALUE*
 🔵 *${value || "--"}*
+
+🤖 *@Thai2dLiveBot ဖြင့်ဖန်တီးထားသည်*
 
 🕒 Updated: *${upd || "--"}*`
   );
