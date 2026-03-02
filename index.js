@@ -736,6 +736,9 @@ Channel ကို join ပါ 👇`;
 bot.onText(/\/myid/, async (msg) => safeSendMessage(msg.chat.id, `🆔 Your Telegram ID: ${msg.from.id}`));
 
 bot.onText(/\/status/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(msg)) return denyNotAdmin(chatId);
+
   const closed = await isMarketClosedToday().catch(() => ({ closed: false, reason: "" }));
   const age = lastLottoAt ? Math.floor((Date.now() - lastLottoAt) / 1000) : null;
 
@@ -759,7 +762,7 @@ bot.onText(/\/status/, async (msg) => {
 🛰 Bot Data Age: ${age === null ? "none" : `${age}s`}
 🛰 Bot Host: ${LOTTO_HOST}${LOTTO_NAMESPACE}`;
 
-  await safeSendMessage(msg.chat.id, s);
+  await safeSendMessage(chatId, s);
 });
 
 bot.onText(/\/pingapi/, async (msg) => {
