@@ -1,6 +1,6 @@
 /**
- * Myanmar 2D Live Bot — MYLUCKY2D3D (WEBHOOK / Render)
- * ===================================================
+ * Myanmar 2D Live Bot — MYLUCKY2D3D (WEBHOOK / Render) — FINAL
+ * ===========================================================
  * ✅ Live updates via EDIT mode every 5s (no spam)
  * ✅ Pro Live animation (heartbeat + dot + bracket + ticker bar)
  * ✅ Final result ✅ + Pin (ONLY after final time + fiStatus === "yes") — Final is NORMAL number (no animation)
@@ -85,7 +85,7 @@ bot
   .then(() => console.log("✅ Webhook set:", WEBHOOK_URL))
   .catch((e) => console.error("❌ setWebHook error:", e.message));
 
-// ===== API ENDPOINTS =====
+// ===== ENDPOINTS =====
 const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb"; // POST dateVal, periodVal(am/pm)
 const HOME_URL = "https://mylucky2d3d.com/";
 const HOLIDAY_URL = "https://mylucky2d3d.com/set-holiday";
@@ -229,7 +229,7 @@ async function postForm(url, paramsObj) {
   const form = new URLSearchParams();
   for (const [k, v] of Object.entries(paramsObj)) form.append(k, String(v));
 
-  const { data } = await axios.post(url, form, {
+  const res = await axios.post(url, form, {
     timeout: 20000,
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -241,6 +241,7 @@ async function postForm(url, paramsObj) {
     validateStatus: (s) => s >= 200 && s < 500,
   });
 
+  const data = res.data;
   if (typeof data !== "object" || data === null) {
     throw new Error("API_NON_JSON");
   }
@@ -252,14 +253,14 @@ async function fetchLive(periodVal /* 'am'|'pm' */) {
   return postForm(API_LIVE, { dateVal, periodVal });
 }
 
-// ===== MODERN/INTERNET (HTML scrape) =====
+// ===== MODERN/INTERNET (HTML scrape) — FIXED (timeLabel + table selector) =====
 async function fetchModernInternetBlocks() {
   const headers = {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept":
       "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,my;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
     "Referer": HOME_URL,
@@ -267,64 +268,61 @@ async function fetchModernInternetBlocks() {
   };
 
   let html = null;
+  let lastStatus = null;
+
   for (let i = 0; i < 3; i++) {
-    try {
-      const res = await axios.get(HOME_URL, {
-        timeout: 20000,
-        headers,
-        responseType: "text",
-        validateStatus: (s) => s >= 200 && s < 500,
-      });
+    const res = await axios.get(HOME_URL, {
+      timeout: 20000,
+      headers,
+      responseType: "text",
+      validateStatus: (s) => s >= 200 && s < 500,
+    });
 
-      if (res.status === 200 && typeof res.data === "string") {
-        html = res.data;
-        break;
-      }
+    lastStatus = res.status;
 
-      if (res.status === 403 || res.status === 406) {
-        await sleep(1200);
-        continue;
-      }
-
-      throw new Error(`HOME_HTTP_${res.status}`);
-    } catch (e) {
-      if (i === 2) throw e;
-      await sleep(1200);
+    if (res.status === 200 && typeof res.data === "string" && res.data.length > 200) {
+      html = res.data;
+      break;
     }
+
+    if (res.status === 403 || res.status === 406) {
+      await sleep(1200);
+      continue;
+    }
+
+    await sleep(800);
   }
 
-  if (!html) throw new Error("HOME_HTML_EMPTY");
+  if (!html) throw new Error(`HOME_HTML_FAIL_${lastStatus ?? "unknown"}`);
 
   const $ = cheerio.load(html);
 
-  function pickBlock(timeLabel) {
-    let block = null;
+  function pickByTime(timeLabel) {
+    // find td.modIntS exactly equals timeLabel
+    const timeTd = $("td.modIntS")
+      .filter((_, el) => $(el).text().replace(/\s+/g, " ").trim() === timeLabel)
+      .first();
 
-    $(".feature-card").each((_, el) => {
-      const t = $(el).text().replace(/\s+/g, " ").trim();
-      if (t.includes(timeLabel) && t.includes("Modern") && t.includes("Internet")) {
-        block = $(el);
-      }
-    });
+    if (!timeTd.length) return null;
 
-    if (!block) return null;
+    const table = timeTd.closest("table");
+    if (!table.length) return null;
 
-    const nums = [];
-    block.find(".modIntV").each((_, el) => {
-      const v = $(el).text().trim();
-      if (/^\d{2}$/.test(v) || v === "--") nums.push(v);
-    });
+    const vals = table
+      .find("td.modIntV")
+      .map((_, el) => $(el).text().replace(/\s+/g, " ").trim())
+      .get();
 
     return {
       time: timeLabel,
-      modern: nums[0] ?? "--",
-      internet: nums[1] ?? "--",
+      modern: vals[0] ?? "--",
+      internet: vals[1] ?? "--",
     };
   }
 
   return {
-    am930: pickBlock("9:30 AM"),
-    pm200: pickBlock("2:00 PM"),
+    am930: pickByTime("9:30 AM"),
+    pm200: pickByTime("2:00 PM"),
   };
 }
 
@@ -370,7 +368,7 @@ async function fetchHolidayMap() {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,my;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
     "Referer": HOME_URL,
@@ -441,7 +439,7 @@ async function isMarketClosedToday() {
       return out;
     }
   } catch {
-    // if holiday fetch fails -> treat as open (safe)
+    // ignore -> treat as open
   }
 
   const out = { closed: false, reason: "" };
@@ -488,7 +486,6 @@ function liveMessageTemplate(label, liveNum, set, value, upd) {
   );
 }
 
-// Final stays NORMAL (no animation)
 function finalMessageTemplate(label, finalNum, set, value, upd) {
   return (
 `╭───────────╮
@@ -622,21 +619,21 @@ async function postFinal(period, data) {
 // ===== MODERN/INTERNET POST (NO PIN) =====
 async function postModInt(which /* "am930" | "pm200" */) {
   const blocks = await fetchModernInternetBlocks();
-  if (!blocks) return;
 
   if (which === "am930") {
     if (modIntPostedAM) return;
-    const b = blocks.am930;
-    if (!b) return;
+    const b = blocks?.am930;
+    if (!b) throw new Error("MODINT_AM_NOT_FOUND");
     const msg = modIntTemplate("🕤 *9:30 AM*", b.modern, b.internet);
     await safeSendMessage(CHANNEL_ID, msg, { parse_mode: "Markdown" });
     modIntPostedAM = true;
+    return;
   }
 
   if (which === "pm200") {
     if (modIntPostedPM) return;
-    const b = blocks.pm200;
-    if (!b) return;
+    const b = blocks?.pm200;
+    if (!b) throw new Error("MODINT_PM_NOT_FOUND");
     const msg = modIntTemplate("🕑 *2:00 PM*", b.modern, b.internet);
     await safeSendMessage(CHANNEL_ID, msg, { parse_mode: "Markdown" });
     modIntPostedPM = true;
@@ -733,7 +730,7 @@ bot.onText(/\/start/, async (msg) => {
 ✅ Final = Check + Pin (Only after ${AM_FINAL_TIME} / ${PM_FINAL_TIME})
 
 🧠 Modern/Internet (Separate posts)
-🕤 9:30 AM  •  🕑 2:00 PM
+🕤 ${MODINT_AM_START} – ${MODINT_AM_END}  •  🕑 ${MODINT_PM_START} – ${MODINT_PM_END}
 
 🛑 Weekend + Holiday = NO posts
 📣 Holiday Notice = ${HOLIDAY_NOTICE_TIME} AM (MMT)
@@ -851,7 +848,8 @@ bot.onText(/\/forcemodam/, async (msg) => {
     await postModInt("am930");
     await safeSendMessage(chatId, "✅ /forcemodam → Posted 9:30 AM Modern/Internet");
   } catch (e) {
-    await safeSendMessage(chatId, `❌ /forcemodam error: ${e.message}`);
+    const code = e?.response?.status;
+    await safeSendMessage(chatId, `❌ /forcemodam error: ${code || ""} ${e.message}`);
   }
 });
 
@@ -867,7 +865,8 @@ bot.onText(/\/forcemodpm/, async (msg) => {
     await postModInt("pm200");
     await safeSendMessage(chatId, "✅ /forcemodpm → Posted 2:00 PM Modern/Internet");
   } catch (e) {
-    await safeSendMessage(chatId, `❌ /forcemodpm error: ${e.message}`);
+    const code = e?.response?.status;
+    await safeSendMessage(chatId, `❌ /forcemodpm error: ${code || ""} ${e.message}`);
   }
 });
 
