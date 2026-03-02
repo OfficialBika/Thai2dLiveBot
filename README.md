@@ -1,4 +1,4 @@
-# 🇹🇭 Thai 2D Live Telegram Bot
+# 🇲🇲 Myanmar 2D Live Telegram Bot
 
 A professional Telegram bot for **Thai 2D results** with automatic updates.
 
