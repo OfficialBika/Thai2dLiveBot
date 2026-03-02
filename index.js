@@ -1,21 +1,5 @@
-/**
- * Myanmar 2D Live Bot — FINAL (WEBHOOK / Render)
- * ===================================================
- * ✅ Primary Source: VVIP 2D socket.io (PLAIN WS via http://live.higginkk.org:4002)
- * ✅ Fallback Source: mylucky2d3d.com POST API
- * ✅ Live updates via EDIT mode every 5s (no spam)
- * ✅ Final ✅ + Pin (when isRunning=false and serverTime hits 12:01 / 16:30)
- * ✅ Modern/Internet separate posts (9:30 AM & 2:00 PM MMT) — NO PIN
- * ✅ Weekend + Holiday (SET Holiday) -> NO live/final/modint posts
- * ✅ Holiday/Weekend reason auto post at 10:00 AM MMT (once/day)
- * ✅ Admin-only: /forceam /forcepm /forcemodam /forcemodpm /forceholiday /pingapi
- * ✅ /start /test /status /myid
- *
- * ENV:
- * - BOT_TOKEN
- * - CHANNEL_ID   (@channel or -100...)
- * - PUBLIC_URL   (https://xxxx.onrender.com) no trailing slash
- * - ADMIN_ID
+/*
+ * Myanmar 2D Live Bot 
  */
 
 "use strict";
@@ -24,9 +8,9 @@ const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const cheerio = require("cheerio");
 const http = require("http");
-const { io } = require("socket.io-client");
+const WebSocket = require("ws");
 
-// ===== ENV =====
+// ===================== ENV =====================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const PUBLIC_URL = process.env.PUBLIC_URL;
@@ -40,16 +24,20 @@ const EDIT_EVERY_MS = Number(process.env.EDIT_EVERY_MS || 5000);
 const LIVE_ENABLE_AM = process.env.LIVE_ENABLE_AM !== "0";
 const LIVE_ENABLE_PM = process.env.LIVE_ENABLE_PM !== "0";
 
+// Live windows (MMT)
 const AM_LIVE_START = process.env.AM_LIVE_START || "11:30";
 const AM_LIVE_END = process.env.AM_LIVE_END || "12:02";
 const PM_LIVE_START = process.env.PM_LIVE_START || "15:55";
 const PM_LIVE_END = process.env.PM_LIVE_END || "16:31";
 
+// Final times (MMT)
 const AM_FINAL_TIME = "12:01";
 const PM_FINAL_TIME = "16:30";
 
+// Holiday notice time
 const HOLIDAY_NOTICE_TIME = process.env.HOLIDAY_NOTICE_TIME || "10:00";
 
+// Mod/Int windows
 const MODINT_AM_START = process.env.MODINT_AM_START || "09:30";
 const MODINT_AM_END = process.env.MODINT_AM_END || "09:33";
 const MODINT_PM_START = process.env.MODINT_PM_START || "14:00";
@@ -60,7 +48,7 @@ if (!BOT_TOKEN || !CHANNEL_ID || !PUBLIC_URL) {
   process.exit(1);
 }
 
-// ===== BOT (WEBHOOK) =====
+// ===================== BOT (WEBHOOK) =====================
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 
 bot
@@ -68,16 +56,16 @@ bot
   .then(() => console.log("✅ Webhook set:", WEBHOOK_URL))
   .catch((e) => console.error("❌ setWebHook error:", e.message));
 
-// ===== SOURCES =====
-const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb";
+// ===================== SOURCES =====================
+// Fallback mylucky2d3d
+const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb"; // POST dateVal, periodVal(am/pm)
 const HOME_URL = "https://mylucky2d3d.com/";
 const HOLIDAY_URL = "https://mylucky2d3d.com/set-holiday";
 
-// ✅ IMPORTANT: VVIP is PLAIN (http/ws) not wss
-const VVIP_BASE = "http://live.higginkk.org:4002";
-const VVIP_PATH = "/socket.io";
+// Primary VVIP RAW WS (PCAP shows: GET / Upgrade websocket, host live.higginkk.org:4002)
+const VVIP_WS_URL = "ws://live.higginkk.org:4002/";
 
-// ===== UTIL: Myanmar Time (Asia/Yangon) =====
+// ===================== TIME (MMT) =====================
 function nowMMTDateObj() {
   return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
 }
@@ -124,7 +112,7 @@ function afterHM(hm) {
   return now >= t;
 }
 
-// ===== Pro Live Animation Helpers =====
+// ===================== UI ANIM =====================
 let animIdx = 0;
 function tickAnim() { animIdx = (animIdx + 1) % 60; }
 function livePulseDot() {
@@ -136,7 +124,11 @@ function heartPulse() {
   return hearts[animIdx % hearts.length];
 }
 function bracketBounce(n) {
-  const frames = [`⟪${n}⟫`,`⟨${n}⟩`,`(${n})`,`⟮${n}⟯`,`〔${n}〕`,`{${n}}`,`【${n}】`,`〖${n}〗`,`「${n}」`,`『${n}』`];
+  const frames = [
+    `⟪${n}⟫`, `⟨${n}⟩`, `(${n})`, `⟮${n}⟯`,
+    `〔${n}〕`, `{${n}}`, `【${n}】`, `〖${n}〗`,
+    `「${n}」`, `『${n}』`
+  ];
   return frames[animIdx % frames.length];
 }
 function tickerBar() {
@@ -151,7 +143,7 @@ function fmtNum(x) {
   return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
-// ===== SAFE TG HELPERS =====
+// ===================== TELEGRAM SAFE HELPERS =====================
 async function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function tgRetryAfterSeconds(err) {
   const ra = err?.response?.body?.parameters?.retry_after;
@@ -188,7 +180,7 @@ async function safeUnpin(chatId, messageId) {
   catch { return null; }
 }
 
-// ===== FALLBACK: mylucky2d3d =====
+// ===================== FALLBACK MYLUCKY =====================
 async function postForm(url, paramsObj) {
   const form = new URLSearchParams();
   for (const [k, v] of Object.entries(paramsObj)) form.append(k, String(v));
@@ -214,75 +206,82 @@ async function fetchMyluckyLive(periodVal) {
   return postForm(API_LIVE, { dateVal, periodVal });
 }
 
-// ===== VVIP socket.io (PRIMARY) =====
-// We keep a persistent connection and cache last payload.
-let vvipSocket = null;
+// ===================== PRIMARY VVIP RAW WS =====================
+// Caches last payload: { morningRound, eveningRound, mornet, serverTime, isRunning, ... }
+let vvipWs = null;
 let vvipConnected = false;
-let lastVvipPayload = null; // this is the "data" object you showed
+let lastVvipPayload = null;
 let lastVvipAt = 0;
 
-function startVvipSocket() {
-  if (vvipSocket) return;
+function startVvipWs() {
+  const connect = () => {
+    try {
+      const ws = new WebSocket(VVIP_WS_URL, {
+        headers: {
+          "User-Agent": "Mozilla/5.0",
+          "Origin": "http://live.higginkk.org",
+        },
+      });
 
-  // connect namespace "/live" because your frames were 42/live,...
-  const socket = io(`${VVIP_BASE}/live`, {
-    path: VVIP_PATH,
-    transports: ["websocket"],
-    upgrade: false,
-    reconnection: true,
-    reconnectionAttempts: Infinity,
-    reconnectionDelay: 800,
-    timeout: 8000,
-    extraHeaders: {
-      "User-Agent": "Mozilla/5.0",
-      "Origin": VVIP_BASE,
-    },
-  });
+      vvipWs = ws;
 
-  vvipSocket = socket;
+      ws.on("open", () => {
+        vvipConnected = true;
+        console.log("✅ VVIP WS connected");
+      });
 
-  socket.on("connect", () => {
-    vvipConnected = true;
-    console.log("✅ VVIP connected:", socket.id);
-  });
+      ws.on("message", (buf) => {
+        const msg = buf.toString("utf8").trim();
+        if (!msg) return;
 
-  socket.on("disconnect", (r) => {
-    vvipConnected = false;
-    console.log("⚠️ VVIP disconnected:", r);
-  });
+        // Expected: {"event":"data","data":{...}}
+        try {
+          const obj = JSON.parse(msg);
 
-  socket.on("connect_error", (e) => {
-    vvipConnected = false;
-    console.log("❌ VVIP connect_error:", e?.message || e);
-  });
+          if (obj?.event === "data" && obj?.data) {
+            lastVvipPayload = obj.data;
+            lastVvipAt = Date.now();
+            return;
+          }
 
-  // Some servers emit 'data' event directly; some wrap as {event:'data', data:{...}}
-  socket.onAny((eventName, payload) => {
-    if (!payload) return;
+          // Sometimes: direct data object
+          if (obj?.morningRound || obj?.eveningRound || obj?.serverTime) {
+            lastVvipPayload = obj;
+            lastVvipAt = Date.now();
+          }
+        } catch {
+          // ignore non-json
+        }
+      });
 
-    // your sample: {"event":"data","data":{...}}
-    if (payload?.event === "data" && payload?.data) {
-      lastVvipPayload = payload.data;
-      lastVvipAt = Date.now();
-      return;
+      ws.on("close", () => {
+        vvipConnected = false;
+        vvipWs = null;
+        console.log("⚠️ VVIP WS closed. reconnecting...");
+        setTimeout(connect, 1200);
+      });
+
+      ws.on("error", (e) => {
+        vvipConnected = false;
+        console.log("❌ VVIP WS error:", e?.message || e);
+        try { ws.close(); } catch {}
+      });
+    } catch (e) {
+      vvipConnected = false;
+      console.log("❌ VVIP WS init error:", e?.message || e);
+      setTimeout(connect, 1500);
     }
+  };
 
-    // sometimes: eventName === 'data' and payload is the data object
-    if (eventName === "data" && (payload?.morningRound || payload?.eveningRound || payload?.serverTime)) {
-      lastVvipPayload = payload;
-      lastVvipAt = Date.now();
-      return;
-    }
-  });
+  connect();
 }
-
-startVvipSocket();
+startVvipWs();
 
 async function getVvipPayloadFresh(maxAgeMs = 15000) {
   const now = Date.now();
   if (lastVvipPayload && now - lastVvipAt <= maxAgeMs) return lastVvipPayload;
 
-  // wait a bit for next push
+  // wait up to 5s for next push
   const deadline = now + 5000;
   while (Date.now() < deadline) {
     if (lastVvipPayload && Date.now() - lastVvipAt <= maxAgeMs) return lastVvipPayload;
@@ -298,28 +297,20 @@ function vvipToStandard(period /* am|pm */, v) {
   const playSet = r.set ?? "--";
   const playValue = r.value ?? "--";
   const playDtm = v.serverTime ?? "--";
+  const fiStatus = v.isRunning === false ? "yes" : "no"; // final when running ends
 
-  // final: VVIP tells isRunning false
-  const fiStatus = v.isRunning === false ? "yes" : "no";
-
-  return {
-    status: "success",
-    playLucky,
-    playSet,
-    playValue,
-    playDtm,
-    fiStatus,
-  };
+  return { status: "success", playLucky, playSet, playValue, playDtm, fiStatus };
 }
 
 function getModIntFromVvip(v) {
+  // v.mornet: modernMorning, modernEvening, internetMorning, internetEvening
   return {
     am930: { modern: v?.mornet?.modernMorning ?? "--", internet: v?.mornet?.internetMorning ?? "--" },
     pm200: { modern: v?.mornet?.modernEvening ?? "--", internet: v?.mornet?.internetEvening ?? "--" },
   };
 }
 
-// fallback scrape for mod/int only if VVIP not available
+// ===== fallback scrape for mod/int if VVIP unavailable =====
 async function fetchModernInternetBlocksFallback() {
   const res = await axios.get(HOME_URL, {
     timeout: 20000,
@@ -327,6 +318,7 @@ async function fetchModernInternetBlocksFallback() {
     responseType: "text",
     validateStatus: (s) => s >= 200 && s < 600,
   });
+
   if (res.status >= 500) throw new Error(`HOME_UPSTREAM_${res.status}`);
   if (res.status !== 200 || typeof res.data !== "string") throw new Error("HOME_HTML_EMPTY");
 
@@ -355,12 +347,13 @@ async function fetchModernInternetBlocksFallback() {
   };
 }
 
-// ===== Holiday / Weekend =====
+// ===================== HOLIDAY / WEEKEND =====================
 function weekdayNameFromIndex(i) {
   return ["တနင်္ဂနွေနေ့","တနင်္လာနေ့","အင်္ဂါနေ့","ဗုဒ္ဓဟူးနေ့","ကြာသပတေးနေ့","သောကြနေ့","စနေနေ့"][i] || "Unknown";
 }
 function parseDateToYMD(text) {
   const s = String(text || "").trim();
+
   const iso = s.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
 
@@ -458,7 +451,7 @@ function holidayNoticeTemplate(reason) {
   );
 }
 
-// ===== MESSAGE TEMPLATES =====
+// ===================== MESSAGE TEMPLATES =====================
 function liveMessageTemplate(label, liveNum, set, value, upd) {
   tickAnim();
   const n = bracketBounce(liveNum || "--");
@@ -513,32 +506,44 @@ ${timeTitle}
   );
 }
 
-// ===== STATE (per day) =====
+// ===================== STATE =====================
 let stateDate = ymdMMT();
+
 let liveMsgIdAM = null;
 let liveMsgIdPM = null;
+
 let pinnedFinalIdAM = null;
 let pinnedFinalIdPM = null;
+
 let finalDoneAM = false;
 let finalDonePM = false;
+
 let modIntPostedAM = false;
 let modIntPostedPM = false;
+
 let holidayNoticePosted = false;
 
 function resetDailyStateIfNeeded() {
   const today = ymdMMT();
   if (today !== stateDate) {
     stateDate = today;
+
     liveMsgIdAM = null;
     liveMsgIdPM = null;
+
     pinnedFinalIdAM = null;
     pinnedFinalIdPM = null;
+
     finalDoneAM = false;
     finalDonePM = false;
+
     modIntPostedAM = false;
     modIntPostedPM = false;
+
     holidayNoticePosted = false;
+
     marketClosedCache = { ymd: null, result: null };
+
     console.log("✅ Daily state reset:", stateDate);
   }
 }
@@ -550,10 +555,12 @@ function looksLikeFinalTime(period, playDtm) {
   return false;
 }
 
+// ===================== LIVE FLOW =====================
 async function upsertLive(period, data) {
   const isAM = period === "am";
   const label = isAM ? "🌅 မနက်" : "🌆 ညနေ";
   const opts = { parse_mode: "Markdown" };
+
   const text = liveMessageTemplate(label, data.playLucky, data.playSet, data.playValue, data.playDtm);
 
   if (isAM) {
@@ -586,14 +593,16 @@ async function postFinal(period, data) {
 
   await safePin(CHANNEL_ID, sent.message_id);
 
-  if (isAM) pinnedFinalIdAM = sent.message_id;
-  else pinnedFinalIdPM = sent.message_id;
-
-  if (isAM) finalDoneAM = true;
-  else finalDonePM = true;
+  if (isAM) {
+    pinnedFinalIdAM = sent.message_id;
+    finalDoneAM = true;
+  } else {
+    pinnedFinalIdPM = sent.message_id;
+    finalDonePM = true;
+  }
 }
 
-// ===== MOD/INT POST =====
+// ===================== MOD/INT POST =====================
 async function postModInt(which) {
   let blocks = null;
 
@@ -624,22 +633,19 @@ async function postModInt(which) {
   }
 }
 
-// ===== LIVE FETCH (VVIP primary + mylucky fallback) =====
+// ===================== LIVE FETCH SMART =====================
 async function fetchLiveSmart(period) {
-  // 1) VVIP
+  // 1) VVIP primary
   try {
     const v = await getVvipPayloadFresh(20000);
     return vvipToStandard(period, v);
-  } catch (e) {
-    // continue fallback
-  }
+  } catch {}
 
   // 2) mylucky fallback
-  const raw = await fetchMyluckyLive(period); // may throw UPSTREAM_500
-  return raw;
+  return fetchMyluckyLive(period);
 }
 
-// ===== TICKS =====
+// ===================== TICKS =====================
 async function tickLive() {
   resetDailyStateIfNeeded();
 
@@ -684,12 +690,12 @@ async function tickModIntAndHolidayNotice() {
 setInterval(() => { tickLive().catch((e) => console.log("Live tick error:", e.message)); }, EDIT_EVERY_MS);
 setInterval(() => { tickModIntAndHolidayNotice().catch((e) => console.log("ModInt tick error:", e.message)); }, 20 * 1000);
 
-// ===== ADMIN HELPERS =====
+// ===================== ADMIN HELPERS =====================
 function isAdmin(msg) { return ADMIN_ID && msg?.from?.id === ADMIN_ID; }
 async function denyNotAdmin(chatId) { return safeSendMessage(chatId, "⛔ ဒီ command ကို Admin ပဲသုံးလို့ရပါတယ်။"); }
 async function denyClosedDay(chatId, reason) { return safeSendMessage(chatId, `🛑 ဒီနေ့ 2D Market ပိတ်ပါတယ်။\nအကြောင်းရင်းက: ${reason}`); }
 
-// ===== COMMANDS =====
+// ===================== COMMANDS =====================
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   const text =
@@ -728,6 +734,8 @@ bot.onText(/\/test(?:\s+(.+))?/, async (msg, match) => {
 
 bot.onText(/\/status/, async (msg) => {
   const closed = await isMarketClosedToday().catch(() => ({ closed: false, reason: "" }));
+  const age = lastVvipAt ? Math.floor((Date.now() - lastVvipAt) / 1000) : null;
+
   const s =
 `📌 Bot Status
 📅 Date (MMT): ${ymdMMT()}
@@ -751,12 +759,11 @@ bot.onText(/\/status/, async (msg) => {
 📢 Channel: ${CHANNEL_ID}
 
 🛰 VVIP Connected: ${vvipConnected ? "YES" : "NO"}
-🛰 VVIP Data Age: ${lastVvipAt ? `${Math.floor((Date.now()-lastVvipAt)/1000)}s` : "none"}`;
+🛰 VVIP Data Age: ${age === null ? "none" : `${age}s`}`;
 
   await safeSendMessage(msg.chat.id, s);
 });
 
-// Admin: API health check
 bot.onText(/\/pingapi/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
@@ -777,7 +784,6 @@ bot.onText(/\/pingapi/, async (msg) => {
   }
 });
 
-// Admin: force AM/PM live/final
 bot.onText(/\/forceam/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
@@ -787,13 +793,16 @@ bot.onText(/\/forceam/, async (msg) => {
 
   try {
     const data = await fetchLiveSmart("am");
-    if (data.fiStatus === "yes" && looksLikeFinalTime("am", data.playDtm)) {
-      await postFinal("am", data);
-      return safeSendMessage(chatId, "✅ /forceam → Final posted + pinned");
-    } else {
-      await upsertLive("am", data);
-      return safeSendMessage(chatId, "✅ /forceam → Live updated (edit mode)");
+    if (data && data.status === "success") {
+      if (data.fiStatus === "yes" && looksLikeFinalTime("am", data.playDtm)) {
+        await postFinal("am", data);
+        return safeSendMessage(chatId, "✅ /forceam → Final posted + pinned");
+      } else {
+        await upsertLive("am", data);
+        return safeSendMessage(chatId, "✅ /forceam → Live updated (edit mode)");
+      }
     }
+    return safeSendMessage(chatId, "⚠️ /forceam → data not success");
   } catch (e) {
     return safeSendMessage(chatId, `❌ /forceam error: ${e.message}`);
   }
@@ -808,19 +817,21 @@ bot.onText(/\/forcepm/, async (msg) => {
 
   try {
     const data = await fetchLiveSmart("pm");
-    if (data.fiStatus === "yes" && looksLikeFinalTime("pm", data.playDtm)) {
-      await postFinal("pm", data);
-      return safeSendMessage(chatId, "✅ /forcepm → Final posted + pinned");
-    } else {
-      await upsertLive("pm", data);
-      return safeSendMessage(chatId, "✅ /forcepm → Live updated (edit mode)");
+    if (data && data.status === "success") {
+      if (data.fiStatus === "yes" && looksLikeFinalTime("pm", data.playDtm)) {
+        await postFinal("pm", data);
+        return safeSendMessage(chatId, "✅ /forcepm → Final posted + pinned");
+      } else {
+        await upsertLive("pm", data);
+        return safeSendMessage(chatId, "✅ /forcepm → Live updated (edit mode)");
+      }
     }
+    return safeSendMessage(chatId, "⚠️ /forcepm → data not success");
   } catch (e) {
     return safeSendMessage(chatId, `❌ /forcepm error: ${e.message}`);
   }
 });
 
-// Admin: force modern/internet
 bot.onText(/\/forcemodam/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
@@ -853,7 +864,6 @@ bot.onText(/\/forcemodpm/, async (msg) => {
   }
 });
 
-// Admin: force holiday notice
 bot.onText(/\/forceholiday/, async (msg) => {
   const chatId = msg.chat.id;
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
@@ -870,7 +880,7 @@ bot.onText(/\/forceholiday/, async (msg) => {
   }
 });
 
-// ===== HTTP SERVER (Webhook Receiver) =====
+// ===================== HTTP SERVER (WEBHOOK RECEIVER) =====================
 http
   .createServer((req, res) => {
     if (req.method === "POST" && req.url === WEBHOOK_PATH) {
@@ -883,6 +893,7 @@ http
       });
       return;
     }
+
     res.writeHead(200);
     res.end("Bot is running");
   })
