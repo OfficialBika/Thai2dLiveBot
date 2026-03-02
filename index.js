@@ -281,9 +281,9 @@ function startLottoSocket() {
       lastLottoPayload = payload.data;
       lastLottoAt = Date.now();
       return;
-    }
+    },
 
-}
+});
 
 // ✅ call once at startup
 startLottoSocket();
