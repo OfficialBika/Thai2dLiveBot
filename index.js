@@ -9,7 +9,6 @@ const axios = require("axios");
 const cheerio = require("cheerio");
 const http = require("http");
 const { io } = require("socket.io-client");
-
 // ===================== ENV =====================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID || "@Live2DSet";
@@ -64,11 +63,10 @@ const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb";
 const HOME_URL = "https://mylucky2d3d.com/";
 const HOLIDAY_URL = "https://mylucky2d3d.com/set-holiday";
 
-// ✅ LOTTO PREDICT socket.io (from your #1 ~ #12)
-const LOTTO_HOST = process.env.LOTTO_HOST || "http://app.predictlotto.org";
-const LOTTO_NAMESPACE = "/live";
-const LOTTO_PATH = "/socket.io";
-
+// ===== LOTTO (Primary) =====
+const LOTTO_HOST = "https://app.predictlotto.org"; // ✅ host from PCAP
+const LOTTO_PATH = "/socket.io/";                 // ✅ important: include trailing slash
+const LOTTO_NAMESPACE = "/live";                  // ✅ because packets are 42/live,...
 // ===================== TIME (MMT) =====================
 function nowMMTDateObj() {
   return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
@@ -235,17 +233,18 @@ let lastLottoAt = 0;
 function startLottoSocket() {
   if (lottoSocket) return;
 
+  // ✅ connect namespace "/live" + path "/socket.io/"
   const socket = io(`${LOTTO_HOST}${LOTTO_NAMESPACE}`, {
-    path: LOTTO_PATH,
+    path: LOTTO_PATH,              // "/socket.io/"
     transports: ["websocket"],
     upgrade: false,
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 800,
-    timeout: 12000,
+    timeout: 10000,
     extraHeaders: {
-      "User-Agent": "Mozilla/5.0",
-      Origin: LOTTO_HOST,
+      "User-Agent": "Dart/3.9 (dart:io)",
+      "Origin": LOTTO_HOST,
     },
   });
 
@@ -253,12 +252,12 @@ function startLottoSocket() {
 
   socket.on("connect", () => {
     lottoConnected = true;
-    console.log("✅ LOTTO socket connected:", socket.id);
+    console.log("✅ LOTTO connected:", socket.id);
   });
 
   socket.on("disconnect", (r) => {
     lottoConnected = false;
-    console.log("⚠️ LOTTO socket disconnected:", r);
+    console.log("⚠️ LOTTO disconnected:", r);
   });
 
   socket.on("connect_error", (e) => {
@@ -266,43 +265,34 @@ function startLottoSocket() {
     console.log("❌ LOTTO connect_error:", e?.message || e);
   });
 
-  // #7 shows event names: data, data2, logs, log2s, log, conns
-  socket.on("data", (payload) => {
+  // ✅ The server sends events like: 42/live,["data",{...}]
+  socket.onAny((eventName, payload) => {
     if (!payload) return;
-    lastLottoPayload = payload;
-    lastLottoAt = Date.now();
-  });
 
-  socket.on("data2", (payload) => {
-    if (!payload) return;
-    // If no main data yet, accept it
-    if (!lastLottoPayload || !lastLottoPayload.morningRound) {
+    // most important events
+    if (eventName === "data" || eventName === "data2") {
       lastLottoPayload = payload;
       lastLottoAt = Date.now();
+      return;
     }
-  });
 
-  // support wrapped format {"event":"data","data":{...}}
-  socket.onAny((eventName, payload) => {
+    // sometimes wrapped: {event:"data", data:{...}}
     if (payload?.event === "data" && payload?.data) {
       lastLottoPayload = payload.data;
       lastLottoAt = Date.now();
+      return;
     }
-    // sometimes eventName itself can be "data" and payload is the data obj
-    if (eventName === "data" && payload?.morningRound) {
-      lastLottoPayload = payload;
-      lastLottoAt = Date.now();
-    }
-  });
+
 }
 
+// ✅ call once at startup
 startLottoSocket();
 
 async function getLottoPayloadFresh(maxAgeMs = 15000) {
   const now = Date.now();
   if (lastLottoPayload && now - lastLottoAt <= maxAgeMs) return lastLottoPayload;
 
-  const deadline = now + 7000;
+  const deadline = now + 6000;
   while (Date.now() < deadline) {
     if (lastLottoPayload && Date.now() - lastLottoAt <= maxAgeMs) return lastLottoPayload;
     await sleep(250);
@@ -310,21 +300,26 @@ async function getLottoPayloadFresh(maxAgeMs = 15000) {
   throw new Error("LOTTO_NO_DATA");
 }
 
-function lottoToStandard(period /* am|pm */, v) {
+function lottoToStandard(period, v) {
   const isAM = period === "am";
-  const r = isAM ? v?.morningRound || {} : v?.eveningRound || {};
-
+  const r = isAM ? (v.morningRound || {}) : (v.eveningRound || {});
   return {
     status: "success",
-    playLucky: r?.digit ?? "--",
-    playSet: r?.set ?? "--",
-    playValue: r?.value ?? "--",
-    playDtm: v?.serverTime ?? "--",
-    fiStatus: v?.isRunning === false ? "yes" : "no",
-    modern: isAM ? v?.mornet?.modernMorning ?? "--" : v?.mornet?.modernEvening ?? "--",
-    internet: isAM ? v?.mornet?.internetMorning ?? "--" : v?.mornet?.internetEvening ?? "--",
-    tw: v?.tw ?? "--",
+    playLucky: r.digit ?? "--",
+    playSet: r.set ?? "--",
+    playValue: r.value ?? "--",
+    playDtm: v.serverTime ?? "--",
+    fiStatus: v.isRunning === false ? "yes" : "no",
+    modern: isAM ? (v?.mornet?.modernMorning ?? "--") : (v?.mornet?.modernEvening ?? "--"),
+    internet: isAM ? (v?.mornet?.internetMorning ?? "--") : (v?.mornet?.internetEvening ?? "--"),
+    tw: v.tw ?? "--",
   };
+}
+
+async function fetchLiveSmart(period) {
+  // ✅ PRIMARY: LOTTO
+  const v = await getLottoPayloadFresh(20000);
+  return lottoToStandard(period, v);
 }
 
 function getModIntFromLotto(v) {
