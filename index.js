@@ -64,8 +64,8 @@ const HOME_URL = "https://mylucky2d3d.com/";
 const HOLIDAY_URL = "https://mylucky2d3d.com/set-holiday";
 
 // ===== LOTTO (Primary) =====
-const LOTTO_HOST = "https://app.predictlotto.org"; // ✅ host from PCAP
-const LOTTO_PATH = "/socket.io/";                 // ✅ important: include trailing slash
+const LOTTO_HOST = "http://app.predictlotto.org"; // ✅ host from PCAP
+const LOTTO_PATH = "/socket.io";                 // ✅ important: include trailing slash
 const LOTTO_NAMESPACE = "/live";                  // ✅ because packets are 42/live,...
 // ===================== TIME (MMT) =====================
 function nowMMTDateObj() {
