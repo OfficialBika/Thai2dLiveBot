@@ -8,7 +8,7 @@ const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const cheerio = require("cheerio");
 const http = require("http");
-const { io } = require("socket.io-client");
+const WebSocket = require("ws"); 
 // ===================== ENV =====================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID || "@Live2DSet";
@@ -63,10 +63,10 @@ const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb";
 const HOME_URL = "https://mylucky2d3d.com/";
 const HOLIDAY_URL = "https://mylucky2d3d.com/set-holiday";
 
-// ===== LOTTO (Primary) =====
-const LOTTO_HOST = "https://app.predictlotto.org"; // ✅ host from PCAP
-const LOTTO_PATH = "/socket.io/";                 // ✅ important: include trailing slash
-const LOTTO_NAMESPACE = "/live";                  // ✅ because packets are 42/live,...
+// ===== LOTTO (Primary) RAW WS (PCAP exact) =====
+const LOTTO_WS_URL = "ws://app.predictlotto.org/socket.io/?EIO=4&transport=websocket";
+const LOTTO_ORIGIN = "http://app.predictlotto.org";     
+
 // ===================== TIME (MMT) =====================
 function nowMMTDateObj() {
   return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
@@ -225,70 +225,80 @@ async function fetchMyluckyLive(periodVal) {
 
 // ===================== LOTTO PREDICT socket.io PRIMARY =====================
 // Based on your frames: 40/live + 42/live,["data",{...}] etc.
-let lottoSocket = null;
+let lottoWs = null;
 let lottoConnected = false;
 let lastLottoPayload = null;
 let lastLottoAt = 0;
 
-function startLottoSocket() {
-  if (lottoSocket) return;
+function startLottoWs() {
+  const connect = () => {
+    try {
+      const ws = new WebSocket(LOTTO_WS_URL, {
+        headers: {
+          "User-Agent": "Mozilla/5.0",
+          "Origin": LOTTO_ORIGIN,
+        },
+      });
 
-  // ✅ connect namespace "/live" + path "/socket.io/"
-  const socket = io(`${LOTTO_HOST}${LOTTO_NAMESPACE}`, {
-    path: LOTTO_PATH,              // "/socket.io/"
-    transports: ["websocket"],
-    upgrade: false,
-    reconnection: true,
-reconnectionAttempts: Infinity,
-reconnectionDelay: 1500,
-reconnectionDelayMax: 5000,
-randomizationFactor: 0.5,
-forceNew: true,
-    extraHeaders: {
-      "User-Agent": "Dart/3.9 (dart:io)",
-      "Origin": LOTTO_HOST,
-    },
-  });
+      lottoWs = ws;
 
-  lottoSocket = socket;
+      ws.on("open", () => {
+        lottoConnected = true;
+        console.log("✅ LOTTO WS connected");
+      });
 
-  socket.on("connect", () => {
-    lottoConnected = true;
-    console.log("✅ LOTTO connected:", socket.id);
-  });
+      ws.on("message", (buf) => {
+        const msg = buf.toString("utf8");
 
-  socket.on("disconnect", (r) => {
-    lottoConnected = false;
-    console.log("⚠️ LOTTO disconnected:", r);
-  });
+        // server handshake: starts with "0{...}"
+        if (msg.startsWith("0")) {
+          // connect to namespace "/live" (PCAP: 40/live,...)
+          try { ws.send("40/live,"); } catch {}
+          return;
+        }
 
-  socket.on("connect_error", (e) => {
-    lottoConnected = false;
-    console.log("❌ LOTTO connect_error:", e?.message || e);
-  });
+        // data packet: 42/live,[ "data", {...} ]
+        if (msg.startsWith("42/live,")) {
+          try {
+            const payload = msg.slice("42/live,".length);
+            const arr = JSON.parse(payload); // ["data", {...}]
+            const eventName = arr?.[0];
+            const dataObj = arr?.[1];
 
-  // ✅ The server sends events like: 42/live,["data",{...}]
-  socket.onAny((eventName, payload) => {
-    if (!payload) return;
+            // accept data / data2 / logs / log2s etc
+            if ((eventName === "data" || eventName === "data2") && dataObj) {
+              lastLottoPayload = dataObj;
+              lastLottoAt = Date.now();
+            }
+          } catch {}
+          return;
+        }
+      });
 
-    // most important events
-    if (eventName === "data" || eventName === "data2") {
-      lastLottoPayload = payload;
-      lastLottoAt = Date.now();
-      return;
+      ws.on("close", (code, reason) => {
+        lottoConnected = false;
+        lottoWs = null;
+        console.log("⚠️ LOTTO WS closed:", code, reason?.toString?.() || "");
+        setTimeout(connect, 1500);
+      });
+
+      ws.on("error", (e) => {
+        lottoConnected = false;
+        console.log("❌ LOTTO WS error:", e?.message || e);
+        try { ws.close(); } catch {}
+      });
+    } catch (e) {
+      lottoConnected = false;
+      console.log("❌ LOTTO WS init error:", e?.message || e);
+      setTimeout(connect, 1500);
     }
+  };
 
-    // sometimes wrapped: {event:"data", data:{...}}
-    if (payload?.event === "data" && payload?.data) {
-      lastLottoPayload = payload.data;
-      lastLottoAt = Date.now();
-      return;
-    }
-
-});
+  connect();
 }
-// ✅ call once at startup
-startLottoSocket();
+
+// ✅ start at boot
+startLottoWs();
 
 async function getLottoPayloadFresh(maxAgeMs = 15000) {
   const now = Date.now();
