@@ -284,7 +284,7 @@ function startLottoSocket() {
     }
 
 });
-
+}
 // ✅ call once at startup
 startLottoSocket();
 
