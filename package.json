@@ -2,17 +2,13 @@
   "name": "thai2d-hybrid-bot",
   "version": "5.0.0",
   "main": "index.js",
-  "type": "commonjs",
   "scripts": {
     "start": "node index.js"
   },
-  "engines": {
-    "node": ">=18"
-  },
   "dependencies": {
+    "node-telegram-bot-api": "^0.66.0",
     "axios": "^1.6.7",
     "cheerio": "^1.0.0-rc.12",
-    "node-telegram-bot-api": "^0.66.0",
-    "socket.io-client": "^4.7.5"
+    "ws": "^8.17.0"
   }
 }
