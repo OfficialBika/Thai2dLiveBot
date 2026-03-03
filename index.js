@@ -248,43 +248,44 @@ function startLottoWs() {
       
        
       ws.on("message", (buf) => {
-  const msg = buf.toString("utf8");
+  const raw = buf.toString("utf8");
 
-  // ✅ Engine.IO heartbeat
-  if (msg === "2") {
-    try { ws.send("3"); } catch {}
-    return;
-  }
+  // Engine.IO can bundle multiple packets separated by 0x1e
+  const packets = raw.split("\x1e").filter(Boolean);
 
-  // handshake: "0{...}"
-  if (msg.startsWith("0")) {
-    try { ws.send("40/live,"); } catch {}
-    return;
-  }
+  for (const msg of packets) {
+    // ✅ ping -> pong
+    if (msg === "2") { try { ws.send("3"); } catch {} continue; }
 
-  // namespace connected ack: "40/live,{...}" (optional log)
-  if (msg.startsWith("40/live,")) {
-    console.log("✅ LIVE namespace joined");
-    return;
-  }
+    // handshake 0{...}
+    if (msg.startsWith("0")) { try { ws.send("40/live,"); } catch {} continue; }
 
-  // data: "42/live,[...]" 
-  if (msg.startsWith("42/live,")) {
-    try {
-      const payload = msg.slice("42/live,".length);
-      const arr = JSON.parse(payload);
-      const eventName = arr?.[0];
-      const dataObj = arr?.[1];
+    // joined namespace
+    if (msg.startsWith("40/live,")) { console.log("✅ LIVE namespace joined"); continue; }
 
-      if ((eventName === "data" || eventName === "data2") && dataObj) {
-        lastLottoPayload = dataObj;
-        lastLottoAt = Date.now();
-        console.log("✅ GOT DATA:", eventName);
+    // DATA events
+    if (msg.startsWith("42/live,")) {
+      try {
+        const payload = msg.slice("42/live,".length);
+        const arr = JSON.parse(payload);
+        const eventName = arr?.[0];
+        const dataObj = arr?.[1];
+
+        if ((eventName === "data" || eventName === "data2") && dataObj) {
+          lastLottoPayload = dataObj;
+          lastLottoAt = Date.now();
+          console.log("✅ GOT DATA:", eventName);
+        }
+      } catch (e) {
+        console.log("❌ parse fail:", e.message);
       }
-    } catch {}
-    return;
-  }
-});
+      continue;
+    }
+
+    // (optional) debug
+    // console.log("LOTTO <= ", msg.slice(0, 80));
+    }
+  });
       ws.on("close", (code, reason) => {
         lottoConnected = false;
         lottoWs = null;
