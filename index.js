@@ -246,10 +246,12 @@ function startLottoWs() {
         console.log("✅ LOTTO WS connected");
       });
       
-       console.log("LOTTO <=", msg.slice(0, 80));
-
+       
       ws.on("message", (buf) => {
         const msg = buf.toString("utf8");
+        
+        console.log("LOTTO <=", msg.slice(0, 80));
+
 
         if (msg === "2") {
           try { ws.send("3"); } catch {}
