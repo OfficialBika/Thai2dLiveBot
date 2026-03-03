@@ -235,7 +235,7 @@ function startLottoWs() {
     try {
       const ws = new WebSocket(LOTTO_WS_URL, {
         headers: {
-          "User-Agent": "Mozilla/5.0",
+          "User-Agent": "Dart/3.9 (dart:io)",
           "Origin": LOTTO_ORIGIN,
         },
       });
@@ -250,10 +250,15 @@ function startLottoWs() {
       ws.on("message", (buf) => {
         const msg = buf.toString("utf8");
 
+        if (msg === "2") {
+          try { ws.send("3"); } catch {}
+          return;
+        }
+
         // server handshake: starts with "0{...}"
         if (msg.startsWith("0")) {
           // connect to namespace "/live" (PCAP: 40/live,...)
-          try { ws.send("40/live,"); } catch {}
+          try { ws.d("40/live,"); } catch {}
           return;
         }
 
@@ -772,7 +777,7 @@ bot.onText(/\/status/, async (msg) => {
 
 🛰 Bot Connected: ${lottoConnected ? "YES" : "NO"}
 🛰 Bot Data Age: ${age === null ? "none" : `${age}s`}
-🛰 Bot Host: ${LOTTO_HOST}${LOTTO_NAMESPACE}`;
+🛰 Bot Host: ${LOTTO_WS_URL}`;
 
   await safeSendMessage(chatId, s);
 });
