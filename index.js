@@ -64,9 +64,8 @@ const HOME_URL = "https://mylucky2d3d.com/";
 const HOLIDAY_URL = "https://mylucky2d3d.com/set-holiday";
 
 // ===== LOTTO (Primary) RAW WS (PCAP exact) =====
-const LOTTO_WS_URL = "ws://app.predictlotto.org/socket.io/?EIO=4&transport=websocket";
-const LOTTO_ORIGIN = "http://app.predictlotto.org";     
-
+const LOTTO_WS_URL = "wss://app.predictlotto.org/socket.io/?EIO=4&transport=websocket";
+const LOTTO_ORIGIN = "https://app.predictlotto.org";
 // ===================== TIME (MMT) =====================
 function nowMMTDateObj() {
   return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
@@ -246,6 +245,8 @@ function startLottoWs() {
         lottoConnected = true;
         console.log("✅ LOTTO WS connected");
       });
+      
+       console.log("LOTTO <=", msg.slice(0, 80));
 
       ws.on("message", (buf) => {
         const msg = buf.toString("utf8");
