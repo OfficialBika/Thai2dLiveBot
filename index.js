@@ -8,7 +8,8 @@ const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const cheerio = require("cheerio");
 const http = require("http");
-const WebSocket = require("ws"); 
+const WebSocket = require("ws");
+
 // ===================== ENV =====================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID || "@Live2DSet";
@@ -16,8 +17,8 @@ const PUBLIC_URL = process.env.PUBLIC_URL;
 const ADMIN_ID = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : null;
 
 const BOT_USERNAME = process.env.BOT_USERNAME || "@Thai2dLiveBot";
-
 const PORT = process.env.PORT || 3000;
+
 const WEBHOOK_PATH = "/webhook";
 const WEBHOOK_URL = `${String(PUBLIC_URL || "").replace(/\/$/, "")}${WEBHOOK_PATH}`;
 
@@ -32,17 +33,18 @@ const PM_LIVE_START = process.env.PM_LIVE_START || "15:55";
 const PM_LIVE_END = process.env.PM_LIVE_END || "16:31";
 
 // Final times (MMT)
-const AM_FINAL_TIME = "12:01";
-const PM_FINAL_TIME = "16:30";
+const AM_FINAL_TIME = process.env.AM_FINAL_TIME || "12:01";
+const PM_FINAL_TIME = process.env.PM_FINAL_TIME || "16:30";
 
 // Holiday notice time
 const HOLIDAY_NOTICE_TIME = process.env.HOLIDAY_NOTICE_TIME || "10:00";
 
-// Mod/Int windows
-const MODINT_AM_START = process.env.MODINT_AM_START || "09:30";
-const MODINT_AM_END = process.env.MODINT_AM_END || "09:33";
-const MODINT_PM_START = process.env.MODINT_PM_START || "14:00";
-const MODINT_PM_END = process.env.MODINT_PM_END || "14:03";
+// ✅ Modern/Internet post times (MMT) — requested
+const MODINT_AM_POST_AT = process.env.MODINT_AM_POST_AT || "09:31";
+const MODINT_PM_POST_AT = process.env.MODINT_PM_POST_AT || "14:01";
+
+// (small windows for safety)
+const MODINT_WINDOW_MINUTES = Number(process.env.MODINT_WINDOW_MINUTES || 1);
 
 if (!BOT_TOKEN || !CHANNEL_ID || !PUBLIC_URL) {
   console.error("❌ Missing ENV. Required: BOT_TOKEN, CHANNEL_ID, PUBLIC_URL");
@@ -63,9 +65,11 @@ const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb";
 const HOME_URL = "https://mylucky2d3d.com/";
 const HOLIDAY_URL = "https://mylucky2d3d.com/set-holiday";
 
-// ===== LOTTO (Primary) RAW WS (PCAP exact) =====
+// ===== LOTTO (Primary) RAW WS (your captured) =====
 const LOTTO_WS_URL = "wss://app.predictlotto.org/socket.io/?EIO=4&transport=websocket";
 const LOTTO_ORIGIN = "https://app.predictlotto.org";
+const LOTTO_TOKEN = process.env.LOTTO_TOKEN || "mmvip2d";
+
 // ===================== TIME (MMT) =====================
 function nowMMTDateObj() {
   return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
@@ -106,6 +110,12 @@ function inRangeMinutes(startHM, endHM) {
   if (s === null || e === null) return false;
   return now >= s && now <= e;
 }
+function inMinuteWindow(atHM, windowMins = 1) {
+  const t = parseHMToMinutes(atHM);
+  if (t === null) return false;
+  const now = minutesNowMMT();
+  return now >= t && now <= t + Math.max(0, windowMins);
+}
 function afterHM(hm) {
   const now = minutesNowMMT();
   const t = parseHMToMinutes(hm);
@@ -127,7 +137,18 @@ function heartPulse() {
   return hearts[animIdx % hearts.length];
 }
 function bracketBounce(n) {
-  const frames = [`⟪${n}⟫`, `⟨${n}⟩`, `(${n})`, `⟮${n}⟯`, `〔${n}〕`, `{${n}}`, `【${n}】`, `〖${n}〗`, `「${n}」`, `『${n}』`];
+  const frames = [
+    `⟪${n}⟫`,
+    `⟨${n}⟩`,
+    `(${n})`,
+    `⟮${n}⟯`,
+    `〔${n}〕`,
+    `{${n}}`,
+    `【${n}】`,
+    `〖${n}〗`,
+    `「${n}」`,
+    `『${n}』`,
+  ];
   return frames[animIdx % frames.length];
 }
 function tickerBar() {
@@ -223,11 +244,24 @@ async function fetchMyluckyLive(periodVal) {
 }
 
 // ===================== LOTTO PREDICT socket.io PRIMARY =====================
-// Based on your frames: 40/live + 42/live,["data",{...}] etc.
+// ✅ split stores
 let lottoWs = null;
-let lottoConnected = false;
-let lastLottoPayload = null;
-let lastLottoAt = 0;
+let lottoConnected = false; // true only when /live joined
+let lastData = null; // event "data"
+let lastDataAt = 0;
+let lastData2 = null; // event "data2"
+let lastData2At = 0;
+
+function setData(eventName, obj) {
+  if (!obj || typeof obj !== "object") return;
+  if (eventName === "data") {
+    lastData = obj;
+    lastDataAt = Date.now();
+  } else if (eventName === "data2") {
+    lastData2 = obj;
+    lastData2At = Date.now();
+  }
+}
 
 function startLottoWs() {
   const connect = () => {
@@ -235,57 +269,69 @@ function startLottoWs() {
       const ws = new WebSocket(LOTTO_WS_URL, {
         headers: {
           "User-Agent": "Dart/3.9 (dart:io)",
-          "Origin": LOTTO_ORIGIN,
+          Origin: LOTTO_ORIGIN,
         },
       });
 
       lottoWs = ws;
+      lottoConnected = false;
 
       ws.on("open", () => {
-        lottoConnected = true;
-        console.log("✅ LOTTO WS connected");
+        console.log("✅ LOTTO WS open");
       });
-      
-       
+
       ws.on("message", (buf) => {
-  const raw = buf.toString("utf8");
+        const raw = buf.toString("utf8");
+        // Engine.IO: multiple packets separated by 0x1e
+        const packets = raw.split("\x1e").filter(Boolean);
 
-  // Engine.IO can bundle multiple packets separated by 0x1e
-  const packets = raw.split("\x1e").filter(Boolean);
+        for (const msg of packets) {
+          // ping -> pong
+          if (msg === "2") {
+            try {
+              ws.send("3");
+            } catch {}
+            continue;
+          }
 
-  for (const msg of packets) {
-    // ✅ ping -> pong
-    if (msg === "2") { try { ws.send("3"); } catch {} continue; }
+          // handshake 0{...} => join namespace with token (EXACT)
+          if (msg.startsWith("0")) {
+            try {
+              ws.send(`40/live,{"token":"${LOTTO_TOKEN}"}`);
+              // console.log("=> join live sent");
+            } catch {}
+            continue;
+          }
 
-    // handshake 0{...}
-    if (msg.startsWith("0")) { try { ws.send("40/live,"); } catch {} continue; }
+          // joined namespace (server replies)
+          if (msg.startsWith("40/live,")) {
+            lottoConnected = true;
+            console.log("✅ LIVE namespace joined");
+            continue;
+          }
 
-    // joined namespace
-    if (msg.startsWith("40/live,")) { console.log("✅ LIVE namespace joined"); continue; }
+          // events
+          if (msg.startsWith("42/live,")) {
+            try {
+              const payload = msg.slice("42/live,".length);
+              const arr = JSON.parse(payload);
+              const eventName = arr?.[0];
+              const dataObj = arr?.[1];
 
-    // DATA events
-    if (msg.startsWith("42/live,")) {
-      try {
-        const payload = msg.slice("42/live,".length);
-        const arr = JSON.parse(payload);
-        const eventName = arr?.[0];
-        const dataObj = arr?.[1];
+              if ((eventName === "data" || eventName === "data2") && dataObj) {
+                setData(eventName, dataObj);
+                // console.log("✅ GOT", eventName);
+              }
+            } catch (e) {
+              console.log("❌ parse fail:", e.message);
+            }
+            continue;
+          }
 
-        if ((eventName === "data" || eventName === "data2") && dataObj) {
-          lastLottoPayload = dataObj;
-          lastLottoAt = Date.now();
-          console.log("✅ GOT DATA:", eventName);
+          // other frames ignored
         }
-      } catch (e) {
-        console.log("❌ parse fail:", e.message);
-      }
-      continue;
-    }
+      });
 
-    // (optional) debug
-    // console.log("LOTTO <= ", msg.slice(0, 80));
-    }
-  });
       ws.on("close", (code, reason) => {
         lottoConnected = false;
         lottoWs = null;
@@ -296,7 +342,9 @@ function startLottoWs() {
       ws.on("error", (e) => {
         lottoConnected = false;
         console.log("❌ LOTTO WS error:", e?.message || e);
-        try { ws.close(); } catch {}
+        try {
+          ws.close();
+        } catch {}
       });
     } catch (e) {
       lottoConnected = false;
@@ -307,20 +355,26 @@ function startLottoWs() {
 
   connect();
 }
-
-// ✅ start at boot
 startLottoWs();
 
-async function getLottoPayloadFresh(maxAgeMs = 15000) {
-  const now = Date.now();
-  if (lastLottoPayload && now - lastLottoAt <= maxAgeMs) return lastLottoPayload;
-
-  const deadline = now + 6000;
+async function waitFresh(getter, ageGetter, maxAgeMs, waitMs = 6000) {
+  const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
-    if (lastLottoPayload && Date.now() - lastLottoAt <= maxAgeMs) return lastLottoPayload;
-    await sleep(250);
+    const v = getter();
+    const at = ageGetter();
+    if (v && Date.now() - at <= maxAgeMs) return v;
+    await sleep(200);
   }
   throw new Error("LOTTO_NO_DATA");
+}
+
+async function getLottoDataFresh(maxAgeMs = 20000) {
+  if (lastData && Date.now() - lastDataAt <= maxAgeMs) return lastData;
+  return waitFresh(() => lastData, () => lastDataAt, maxAgeMs);
+}
+async function getLottoData2Fresh(maxAgeMs = 20000) {
+  if (lastData2 && Date.now() - lastData2At <= maxAgeMs) return lastData2;
+  return waitFresh(() => lastData2, () => lastData2At, maxAgeMs);
 }
 
 function lottoToStandard(period, v) {
@@ -335,20 +389,23 @@ function lottoToStandard(period, v) {
     fiStatus: v.isRunning === false ? "yes" : "no",
     modern: isAM ? (v?.mornet?.modernMorning ?? "--") : (v?.mornet?.modernEvening ?? "--"),
     internet: isAM ? (v?.mornet?.internetMorning ?? "--") : (v?.mornet?.internetEvening ?? "--"),
-    tw: v.tw ?? "--",
+    tw: v?.tw ?? "--",
   };
 }
 
-async function fetchLiveSmart(period) {
-  // ✅ PRIMARY: LOTTO
-  const v = await getLottoPayloadFresh(20000);
-  return lottoToStandard(period, v);
-}
-
+// ✅ Modern/Internet blocks: 정확 source = /live payload
 function getModIntFromLotto(v) {
   return {
-    am930: { modern: v?.mornet?.modernMorning ?? "--", internet: v?.mornet?.internetMorning ?? "--", tw: v?.tw ?? "--" },
-    pm200: { modern: v?.mornet?.modernEvening ?? "--", internet: v?.mornet?.internetEvening ?? "--", tw: v?.tw ?? "--" },
+    am: {
+      modern: v?.mornet?.modernMorning ?? "--",
+      internet: v?.mornet?.internetMorning ?? "--",
+      tw: v?.tw ?? "--",
+    },
+    pm: {
+      modern: v?.mornet?.modernEvening ?? "--",
+      internet: v?.mornet?.internetEvening ?? "--",
+      tw: v?.tw ?? "--",
+    },
   };
 }
 
@@ -384,8 +441,8 @@ async function fetchModernInternetBlocksFallback() {
   }
 
   return {
-    am930: pickBlock("9:30 AM"),
-    pm200: pickBlock("2:00 PM"),
+    am: pickBlock("9:30 AM"),
+    pm: pickBlock("2:00 PM"),
   };
 }
 
@@ -632,49 +689,52 @@ async function postFinal(period, data) {
   }
 }
 
-// ===================== MOD/INT POST =====================
+// ===================== MOD/INT POST (requested times) =====================
 async function postModInt(which) {
+  // which: "am" | "pm"
+  if (which === "am" && modIntPostedAM) return;
+  if (which === "pm" && modIntPostedPM) return;
+
   let blocks = null;
 
+  // ✅ Primary: from /live payload "data"
   try {
-    const v = await getLottoPayloadFresh(60000);
+    const v = await getLottoDataFresh(60000);
     blocks = getModIntFromLotto(v);
   } catch {}
 
+  // fallback if needed
   if (!blocks) {
     try {
       const fb = await fetchModernInternetBlocksFallback();
-      blocks = { am930: { ...fb.am930, tw: "--" }, pm200: { ...fb.pm200, tw: "--" } };
+      blocks = {
+        am: { modern: fb.am.modern, internet: fb.am.internet, tw: "--" },
+        pm: { modern: fb.pm.modern, internet: fb.pm.internet, tw: "--" },
+      };
     } catch {
-      blocks = { am930: { modern: "--", internet: "--", tw: "--" }, pm200: { modern: "--", internet: "--", tw: "--" } };
+      blocks = {
+        am: { modern: "--", internet: "--", tw: "--" },
+        pm: { modern: "--", internet: "--", tw: "--" },
+      };
     }
   }
 
-  if (which === "am930") {
-    if (modIntPostedAM) return;
-    const b = blocks.am930;
-    await safeSendMessage(CHANNEL_ID, modIntTemplate("🕤 *9:30 AM*", b.modern, b.internet, b.tw), { parse_mode: "Markdown" });
+  if (which === "am") {
+    const b = blocks.am;
+    await safeSendMessage(CHANNEL_ID, modIntTemplate("🕤 *9:31 AM*", b.modern, b.internet, b.tw), { parse_mode: "Markdown" });
     modIntPostedAM = true;
-  }
-
-  if (which === "pm200") {
-    if (modIntPostedPM) return;
-    const b = blocks.pm200;
-    await safeSendMessage(CHANNEL_ID, modIntTemplate("🕑 *2:00 PM*", b.modern, b.internet, b.tw), { parse_mode: "Markdown" });
+  } else {
+    const b = blocks.pm;
+    await safeSendMessage(CHANNEL_ID, modIntTemplate("🕑 *2:01 PM*", b.modern, b.internet, b.tw), { parse_mode: "Markdown" });
     modIntPostedPM = true;
   }
 }
 
 // ===================== LIVE FETCH SMART =====================
 async function fetchLiveSmart(period) {
-  // 1) Lotto Predict primary
-  try {
-    const v = await getLottoPayloadFresh(20000);
-    return lottoToStandard(period, v);
-  } catch {}
-
-  // 2) mylucky fallback
-  return fetchMyluckyLive(period);
+  // ✅ Primary: lotto /live payload "data" (most accurate)
+  const v = await getLottoDataFresh(20000);
+  return lottoToStandard(period, v);
 }
 
 // ===================== TICKS =====================
@@ -704,17 +764,18 @@ async function tickModIntAndHolidayNotice() {
   resetDailyStateIfNeeded();
   const closed = await isMarketClosedToday();
 
+  // holiday notice
   if (!holidayNoticePosted && inRangeMinutes(HOLIDAY_NOTICE_TIME, "10:01")) {
     if (closed?.closed) {
       await safeSendMessage(CHANNEL_ID, holidayNoticeTemplate(closed.reason), { parse_mode: "Markdown" });
       holidayNoticePosted = true;
     }
   }
-
   if (closed?.closed) return;
 
-  if (inRangeMinutes(MODINT_AM_START, MODINT_AM_END)) await postModInt("am930").catch(() => null);
-  if (inRangeMinutes(MODINT_PM_START, MODINT_PM_END)) await postModInt("pm200").catch(() => null);
+  // ✅ Requested: post at exact times
+  if (inMinuteWindow(MODINT_AM_POST_AT, MODINT_WINDOW_MINUTES)) await postModInt("am").catch(() => null);
+  if (inMinuteWindow(MODINT_PM_POST_AT, MODINT_WINDOW_MINUTES)) await postModInt("pm").catch(() => null);
 }
 
 setInterval(() => tickLive().catch((e) => console.log("Live tick error:", e.message)), EDIT_EVERY_MS);
@@ -744,7 +805,7 @@ bot.onText(/\/start/, async (msg) => {
 ✅ Final = Check + Pin (Only after ${AM_FINAL_TIME} / ${PM_FINAL_TIME})
 
 🧠 Modern/Internet (Separate posts)
-🕤 9:30 AM  •  🕑 2:00 PM
+🕤 ${MODINT_AM_POST_AT}  •  🕑 ${MODINT_PM_POST_AT}
 
 🛑 Weekend + Holiday = NO posts
 📣 Holiday Notice = ${HOLIDAY_NOTICE_TIME} AM (MMT)
@@ -763,7 +824,7 @@ bot.onText(/\/status/, async (msg) => {
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
 
   const closed = await isMarketClosedToday().catch(() => ({ closed: false, reason: "" }));
-  const age = lastLottoAt ? Math.floor((Date.now() - lastLottoAt) / 1000) : null;
+  const age = lastDataAt ? Math.floor((Date.now() - lastDataAt) / 1000) : null;
 
   const s = `📌 Bot Status
 📅 Date (MMT): ${ymdMMT()}
@@ -781,9 +842,10 @@ bot.onText(/\/status/, async (msg) => {
 🔐 Admin ID set: ${ADMIN_ID ? "YES" : "NO"}
 📢 Channel: ${CHANNEL_ID}
 
-🛰 Bot Connected: ${lottoConnected ? "YES" : "NO"}
-🛰 Bot Data Age: ${age === null ? "none" : `${age}s`}
-🛰 Bot Host: ${LOTTO_WS_URL}`;
+🛰 WS Joined /live: ${lottoConnected ? "YES" : "NO"}
+🛰 data age: ${age === null ? "none" : `${age}s`}
+🛰 token: ${LOTTO_TOKEN}
+🛰 host: ${LOTTO_WS_URL}`;
 
   await safeSendMessage(chatId, s);
 });
@@ -793,11 +855,12 @@ bot.onText(/\/pingapi/, async (msg) => {
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
 
   try {
-    const v = await getLottoPayloadFresh(60000);
+    const v = await getLottoDataFresh(60000);
     const am = lottoToStandard("am", v);
+    const blocks = getModIntFromLotto(v);
     await safeSendMessage(
       chatId,
-      `✅ LOTTO OK\nAM: ${am.playLucky} | SET ${am.playSet} | VALUE ${am.playValue}\nTime: ${am.playDtm}\nModern: ${am.modern} | Internet: ${am.internet} | TW: ${am.tw}`
+      `✅ LOTTO OK (/live)\nAM: ${am.playLucky} | SET ${am.playSet} | VALUE ${am.playValue}\nTime: ${am.playDtm}\nModern(AM): ${blocks.am.modern} | Internet(AM): ${blocks.am.internet} | TW: ${blocks.am.tw}`
     );
   } catch (e) {
     await safeSendMessage(chatId, `❌ LOTTO FAIL: ${e.message}`);
@@ -808,15 +871,6 @@ bot.onText(/\/pingapi/, async (msg) => {
     await safeSendMessage(chatId, `✅ mylucky OK (am)\nstatus=${m.status}`);
   } catch (e) {
     await safeSendMessage(chatId, `⚠️ mylucky FAIL: ${e.message}`);
-  }
-});
-
-bot.onText(/\/test(?:\s+(.+))?/, async (msg, match) => {
-  try {
-    await safeSendMessage(CHANNEL_ID, `✅ Test post OK (channel)\n${match?.[1] ? `Message: ${match[1]}` : ""}`.trim());
-    await safeSendMessage(msg.chat.id, "✅ Test post sent to channel");
-  } catch (e) {
-    await safeSendMessage(msg.chat.id, `❌ Test failed: ${e.message}`);
   }
 });
 
@@ -875,8 +929,8 @@ bot.onText(/\/forcemodam/, async (msg) => {
 
   try {
     modIntPostedAM = false;
-    await postModInt("am930");
-    await safeSendMessage(chatId, "✅ /forcemodam → Posted 9:30 AM Modern/Internet");
+    await postModInt("am");
+    await safeSendMessage(chatId, "✅ /forcemodam → Posted 9:31 AM Modern/Internet");
   } catch (e) {
     await safeSendMessage(chatId, `❌ /forcemodam error: ${e.message}`);
   }
@@ -891,8 +945,8 @@ bot.onText(/\/forcemodpm/, async (msg) => {
 
   try {
     modIntPostedPM = false;
-    await postModInt("pm200");
-    await safeSendMessage(chatId, "✅ /forcemodpm → Posted 2:00 PM Modern/Internet");
+    await postModInt("pm");
+    await safeSendMessage(chatId, "✅ /forcemodpm → Posted 2:01 PM Modern/Internet");
   } catch (e) {
     await safeSendMessage(chatId, `❌ /forcemodpm error: ${e.message}`);
   }
@@ -929,7 +983,6 @@ http
       });
       return;
     }
-
     res.writeHead(200);
     res.end("Bot is running");
   })
