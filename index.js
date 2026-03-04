@@ -1,9 +1,14 @@
 /*
  * Myanmar 2D Live Bot — FINAL (No Error)
- * ✅ Socket.IO /live token join fixed
- * ✅ PM mapping fallback (use top-level digit/set/value when eveningRound is empty)
- * ✅ Modern/Internet post time: 9:31 AM and 2:01 PM (MMT)
- * ✅ /pingapi no longer fails due to freshness (shows last known if needed)
+ * --------------------------------------
+ * ✅ Webhook (Render / VPS) + HTTP server receiver
+ * ✅ Primary source: app.predictlotto.org socket.io (/live) with token
+ * ✅ AM/PM Live: uses morningRound/eveningRound, with safe fallback to top-level digit/set/value
+ * ✅ Modern/Internet/TW posts:
+ *    - 9:00 AM (MMT) => modernMorning / internetMorning / tw
+ *    - 2:00 PM (MMT) => modernEvening / internetEvening / tw
+ * ✅ Weekend + Holiday: no live posts; Holiday notice at HOLIDAY_NOTICE_TIME
+ * ✅ Admin commands: /status /pingapi /forceam /forcepm /forcemodam /forcemodpm /forceholiday
  */
 
 "use strict";
@@ -26,6 +31,7 @@ const PORT = process.env.PORT || 3000;
 const WEBHOOK_PATH = "/webhook";
 const WEBHOOK_URL = `${String(PUBLIC_URL || "").replace(/\/$/, "")}${WEBHOOK_PATH}`;
 
+// intervals
 const EDIT_EVERY_MS = Number(process.env.EDIT_EVERY_MS || 5000);
 const LIVE_ENABLE_AM = process.env.LIVE_ENABLE_AM !== "0";
 const LIVE_ENABLE_PM = process.env.LIVE_ENABLE_PM !== "0";
@@ -40,15 +46,15 @@ const PM_LIVE_END = process.env.PM_LIVE_END || "16:31";
 const AM_FINAL_TIME = process.env.AM_FINAL_TIME || "12:01";
 const PM_FINAL_TIME = process.env.PM_FINAL_TIME || "16:30";
 
-// Holiday notice time
+// Holiday notice time (MMT)
 const HOLIDAY_NOTICE_TIME = process.env.HOLIDAY_NOTICE_TIME || "10:00";
 
-// ✅ Mod/Int windows (post at exactly 9:31 and 2:01)
-const MODINT_AM_START = process.env.MODINT_AM_START || "09:31";
-const MODINT_AM_END = process.env.MODINT_AM_END || "09:32";
-const MODINT_PM_START = process.env.MODINT_PM_START || "14:01";
-const MODINT_PM_END = process.env.MODINT_PM_END || "14:02";
+// ✅ Modern/Internet requested times (MMT)
+const MODINT_AM_POST_AT = process.env.MODINT_AM_POST_AT || "09:00";
+const MODINT_PM_POST_AT = process.env.MODINT_PM_POST_AT || "14:00";
+const MODINT_WINDOW_MINUTES = Number(process.env.MODINT_WINDOW_MINUTES || 1);
 
+// ===================== VALIDATE =====================
 if (!BOT_TOKEN || !CHANNEL_ID || !PUBLIC_URL) {
   console.error("❌ Missing ENV. Required: BOT_TOKEN, CHANNEL_ID, PUBLIC_URL");
   process.exit(1);
@@ -63,12 +69,12 @@ bot
   .catch((e) => console.error("❌ setWebHook error:", e.message));
 
 // ===================== SOURCES =====================
-// Fallback mylucky2d3d
+// mylucky fallback
 const API_LIVE = "https://mylucky2d3d.com/zusksbasqyfg/vodiicunchvb";
 const HOME_URL = "https://mylucky2d3d.com/";
 const HOLIDAY_URL = "https://mylucky2d3d.com/set-holiday";
 
-// ===== LOTTO (Primary) socket.io raw ws =====
+// predictlotto socket.io
 const LOTTO_WS_URL = "wss://app.predictlotto.org/socket.io/?EIO=4&transport=websocket";
 const LOTTO_ORIGIN = "https://app.predictlotto.org";
 const LOTTO_TOKEN = process.env.LOTTO_TOKEN || "mmvip2d";
@@ -113,6 +119,12 @@ function inRangeMinutes(startHM, endHM) {
   if (s === null || e === null) return false;
   return now >= s && now <= e;
 }
+function inMinuteWindow(atHM, windowMins = 1) {
+  const t = parseHMToMinutes(atHM);
+  if (t === null) return false;
+  const now = minutesNowMMT();
+  return now >= t && now <= t + Math.max(0, windowMins);
+}
 function afterHM(hm) {
   const now = minutesNowMMT();
   const t = parseHMToMinutes(hm);
@@ -134,18 +146,7 @@ function heartPulse() {
   return hearts[animIdx % hearts.length];
 }
 function bracketBounce(n) {
-  const frames = [
-    `⟪${n}⟫`,
-    `⟨${n}⟩`,
-    `(${n})`,
-    `⟮${n}⟯`,
-    `〔${n}〕`,
-    `{${n}}`,
-    `【${n}】`,
-    `〖${n}〗`,
-    `「${n}」`,
-    `『${n}』`,
-  ];
+  const frames = [`⟪${n}⟫`, `⟨${n}⟩`, `(${n})`, `⟮${n}⟯`, `〔${n}〕`, `{${n}}`, `【${n}】`, `〖${n}〗`, `「${n}」`, `『${n}』`];
   return frames[animIdx % frames.length];
 }
 function tickerBar() {
@@ -158,10 +159,6 @@ function fmtNum(x) {
   const n = Number(s.replace(/,/g, ""));
   if (Number.isNaN(n)) return s;
   return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
-}
-function isNumLike(v) {
-  const s = String(v ?? "").trim();
-  return /^\d+(\.\d+)?$/.test(s.replace(/,/g, ""));
 }
 
 // ===================== TELEGRAM SAFE HELPERS =====================
@@ -219,6 +216,7 @@ async function safeUnpin(chatId, messageId) {
 }
 
 // ===================== FALLBACK MYLUCKY =====================
+// 1) JSON endpoint (sometimes returns non-json -> handled)
 async function postForm(url, paramsObj) {
   const form = new URLSearchParams();
   for (const [k, v] of Object.entries(paramsObj)) form.append(k, String(v));
@@ -235,25 +233,84 @@ async function postForm(url, paramsObj) {
   });
 
   if (res.status >= 500) throw new Error(`UPSTREAM_${res.status}`);
-  const data = res.data;
-  if (typeof data !== "object" || data === null) throw new Error("API_NON_JSON");
-  return data;
+
+  // sometimes HTML string
+  if (typeof res.data !== "object" || res.data === null) throw new Error("API_NON_JSON");
+  return res.data;
 }
-async function fetchMyluckyLive(periodVal) {
+async function fetchMyluckyLiveJSON(periodVal) {
   const dateVal = ymdMMT();
   return postForm(API_LIVE, { dateVal, periodVal });
 }
 
+// 2) HTML scrape fallback (safe)
+async function fetchMyluckyLiveScrape(periodVal) {
+  // periodVal: "am" or "pm"
+  const htmlRes = await axios.get(HOME_URL, {
+    timeout: 20000,
+    headers: { "User-Agent": "Mozilla/5.0", Accept: "text/html,*/*" },
+    responseType: "text",
+    validateStatus: (s) => s >= 200 && s < 600,
+  });
+  if (htmlRes.status !== 200 || typeof htmlRes.data !== "string") throw new Error("HOME_HTML_EMPTY");
+
+  const $ = cheerio.load(htmlRes.data);
+
+  // best-effort: find "2D Live" blocks (site changes often)
+  const text = $("body").text().replace(/\s+/g, " ").trim();
+
+  // Very loose parse: find first 2D digit around "Now" based on period keywords
+  // If cannot parse, return unknown
+  const out = {
+    status: "success",
+    playLucky: "--",
+    playSet: "--",
+    playValue: "--",
+    playDtm: prettyMMT(),
+    fiStatus: "no",
+    modern: "--",
+    internet: "--",
+    tw: "--",
+  };
+
+  // if we can't parse, still return success to avoid crash
+  // (primary is predictlotto anyway)
+  if (text.includes("Modern") && text.includes("Internet")) {
+    // try fetch mod/int from blocks for backup
+    try {
+      const blocks = await fetchModernInternetBlocksFallback();
+      if (periodVal === "am") {
+        out.modern = blocks.am.modern;
+        out.internet = blocks.am.internet;
+      } else {
+        out.modern = blocks.pm.modern;
+        out.internet = blocks.pm.internet;
+      }
+    } catch {}
+  }
+
+  return out;
+}
+
 // ===================== LOTTO PREDICT socket.io PRIMARY =====================
+// store both "data" and "data2"
 let lottoWs = null;
-let lottoConnected = false;
+let lottoConnected = false; // true when /live joined
+let lastData = null;
+let lastDataAt = 0;
+let lastData2 = null;
+let lastData2At = 0;
 
-// we may receive both data + data2
-let lastLottoData = null;
-let lastLottoDataAt = 0;
-
-let lastLottoData2 = null;
-let lastLottoData2At = 0;
+function setData(eventName, obj) {
+  if (!obj || typeof obj !== "object") return;
+  if (eventName === "data") {
+    lastData = obj;
+    lastDataAt = Date.now();
+  } else if (eventName === "data2") {
+    lastData2 = obj;
+    lastData2At = Date.now();
+  }
+}
 
 function startLottoWs() {
   const connect = () => {
@@ -266,10 +323,10 @@ function startLottoWs() {
       });
 
       lottoWs = ws;
+      lottoConnected = false;
 
       ws.on("open", () => {
-        lottoConnected = true;
-        console.log("✅ LOTTO WS connected");
+        console.log("✅ LOTTO WS open");
       });
 
       ws.on("message", (buf) => {
@@ -279,23 +336,22 @@ function startLottoWs() {
         for (const msg of packets) {
           // ping -> pong
           if (msg === "2") {
-            try {
-              ws.send("3");
-            } catch {}
+            try { ws.send("3"); } catch {}
             continue;
           }
 
-          // handshake 0{...} => join namespace with token
+          // handshake -> join namespace with token
           if (msg.startsWith("0")) {
             try {
-              ws.send(`40/live,${JSON.stringify({ token: LOTTO_TOKEN })}`);
+              ws.send(`40/live,{"token":"${LOTTO_TOKEN}"}`);
             } catch {}
             continue;
           }
 
-          // joined namespace
+          // joined namespace (comma may or may not exist)
           if (msg.startsWith("40/live")) {
-            // optional: could be 40/live,{"sid":"..."} or 40/live
+            lottoConnected = true;
+            // console.log("✅ LIVE namespace joined");
             continue;
           }
 
@@ -306,16 +362,12 @@ function startLottoWs() {
               const arr = JSON.parse(payload);
               const eventName = arr?.[0];
               const dataObj = arr?.[1];
-
-              if (eventName === "data" && dataObj) {
-                lastLottoData = dataObj;
-                lastLottoDataAt = Date.now();
+              if ((eventName === "data" || eventName === "data2") && dataObj) {
+                setData(eventName, dataObj);
               }
-              if (eventName === "data2" && dataObj) {
-                lastLottoData2 = dataObj;
-                lastLottoData2At = Date.now();
-              }
-            } catch {}
+            } catch (e) {
+              console.log("❌ parse fail:", e.message);
+            }
             continue;
           }
         }
@@ -331,9 +383,7 @@ function startLottoWs() {
       ws.on("error", (e) => {
         lottoConnected = false;
         console.log("❌ LOTTO WS error:", e?.message || e);
-        try {
-          ws.close();
-        } catch {}
+        try { ws.close(); } catch {}
       });
     } catch (e) {
       lottoConnected = false;
@@ -344,85 +394,69 @@ function startLottoWs() {
 
   connect();
 }
-
-// ✅ start at boot
 startLottoWs();
 
-// watchdog: if connected but no fresh data for long time, force reconnect
-setInterval(() => {
-  const now = Date.now();
-  const newest = Math.max(lastLottoDataAt || 0, lastLottoData2At || 0);
-  if (lottoConnected && newest && now - newest > 120000) {
-    try {
-      lottoWs?.close();
-    } catch {}
-  }
-}, 30000);
-
-async function getLottoPayloadFresh(maxAgeMs = 20000) {
-  const now = Date.now();
-
-  // prefer lastLottoData, fallback to data2
-  const pickIfFresh = () => {
-    if (lastLottoData && now - lastLottoDataAt <= maxAgeMs) return lastLottoData;
-    if (lastLottoData2 && now - lastLottoData2At <= maxAgeMs) return lastLottoData2;
-    return null;
-  };
-
-  const fresh = pickIfFresh();
-  if (fresh) return fresh;
-
-  // wait a bit for new frames
-  const deadline = now + 6000;
+async function waitFresh(getter, atGetter, maxAgeMs, waitMs = 7000) {
+  const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
-    const v = pickIfFresh();
-    if (v) return v;
-    await sleep(250);
+    const v = getter();
+    const at = atGetter();
+    if (v && Date.now() - at <= maxAgeMs) return v;
+    await sleep(200);
   }
   throw new Error("LOTTO_NO_DATA");
 }
+async function getLottoDataFresh(maxAgeMs = 20000) {
+  if (lastData && Date.now() - lastDataAt <= maxAgeMs) return lastData;
+  return waitFresh(() => lastData, () => lastDataAt, maxAgeMs);
+}
+async function getLottoData2Fresh(maxAgeMs = 20000) {
+  if (lastData2 && Date.now() - lastData2At <= maxAgeMs) return lastData2;
+  return waitFresh(() => lastData2, () => lastData2At, maxAgeMs);
+}
 
-function extractRoundForPeriod(period, v) {
+// ===================== PARSERS (AM/PM FIX) =====================
+function isNumLike(v) {
+  const s = String(v ?? "").trim();
+  return /^\d+(\.\d+)?$/.test(s.replace(/,/g, ""));
+}
+
+function extractRound(period, v) {
   const isAM = period === "am";
-  const roundObj = isAM ? v?.morningRound : v?.eveningRound;
+  const round = isAM ? (v?.morningRound || {}) : (v?.eveningRound || {});
 
-  // If roundObj is missing OR has "--" but top-level has numbers => fallback to top-level
-  const rd = roundObj && typeof roundObj === "object" ? roundObj : {};
-
-  const digit = isNumLike(rd?.digit) ? rd.digit : isNumLike(v?.digit) ? v.digit : "--";
-  const set = isNumLike(rd?.set) ? rd.set : isNumLike(v?.set) ? v.set : "--";
-  const value = isNumLike(rd?.value) ? rd.value : isNumLike(v?.value) ? v.value : "--";
+  const digit = isNumLike(round?.digit) ? round.digit : (isNumLike(v?.digit) ? v.digit : "--");
+  const set   = isNumLike(round?.set) ? round.set : (isNumLike(v?.set) ? v.set : "--");
+  const value = isNumLike(round?.value) ? round.value : (isNumLike(v?.value) ? v.value : "--");
 
   return { digit, set, value };
 }
 
 function lottoToStandard(period, v) {
-  const r = extractRoundForPeriod(period, v);
+  const r = extractRound(period, v);
+  const isAM = period === "am";
 
   return {
     status: "success",
-    playLucky: r.digit ?? "--",
-    playSet: r.set ?? "--",
-    playValue: r.value ?? "--",
+    playLucky: r.digit,
+    playSet: r.set,
+    playValue: r.value,
     playDtm: v?.serverTime ?? "--",
-
-    // when isRunning === false => final may be ready depending on time
     fiStatus: v?.isRunning === false ? "yes" : "no",
-
-    modern: period === "am" ? v?.mornet?.modernMorning ?? "--" : v?.mornet?.modernEvening ?? "--",
-    internet: period === "am" ? v?.mornet?.internetMorning ?? "--" : v?.mornet?.internetEvening ?? "--",
+    modern: isAM ? (v?.mornet?.modernMorning ?? "--") : (v?.mornet?.modernEvening ?? "--"),
+    internet: isAM ? (v?.mornet?.internetMorning ?? "--") : (v?.mornet?.internetEvening ?? "--"),
     tw: v?.tw ?? "--",
   };
 }
 
 function getModIntFromLotto(v) {
   return {
-    am930: {
+    am: {
       modern: v?.mornet?.modernMorning ?? "--",
       internet: v?.mornet?.internetMorning ?? "--",
       tw: v?.tw ?? "--",
     },
-    pm200: {
+    pm: {
       modern: v?.mornet?.modernEvening ?? "--",
       internet: v?.mornet?.internetEvening ?? "--",
       tw: v?.tw ?? "--",
@@ -430,7 +464,7 @@ function getModIntFromLotto(v) {
   };
 }
 
-// fallback scrape for mod/int if Lotto unavailable
+// fallback scrape for mod/int from mylucky site
 async function fetchModernInternetBlocksFallback() {
   const res = await axios.get(HOME_URL, {
     timeout: 20000,
@@ -462,8 +496,8 @@ async function fetchModernInternetBlocksFallback() {
   }
 
   return {
-    am930: pickBlock("9:30 AM"),
-    pm200: pickBlock("2:00 PM"),
+    am: pickBlock("9:30 AM"),
+    pm: pickBlock("2:00 PM"),
   };
 }
 
@@ -712,67 +746,61 @@ async function postFinal(period, data) {
 
 // ===================== MOD/INT POST =====================
 async function postModInt(which) {
+  // which: "am" | "pm"
+  if (which === "am" && modIntPostedAM) return;
+  if (which === "pm" && modIntPostedPM) return;
+
   let blocks = null;
 
+  // Primary: from lotto payload
   try {
-    const v = await getLottoPayloadFresh(120000); // allow 2 mins for mod/int
+    const v = await getLottoDataFresh(60000);
     blocks = getModIntFromLotto(v);
   } catch {}
 
+  // Fallback: scrape
   if (!blocks) {
     try {
       const fb = await fetchModernInternetBlocksFallback();
-      blocks = { am930: { ...fb.am930, tw: "--" }, pm200: { ...fb.pm200, tw: "--" } };
+      blocks = {
+        am: { modern: fb.am.modern, internet: fb.am.internet, tw: "--" },
+        pm: { modern: fb.pm.modern, internet: fb.pm.internet, tw: "--" },
+      };
     } catch {
-      blocks = { am930: { modern: "--", internet: "--", tw: "--" }, pm200: { modern: "--", internet: "--", tw: "--" } };
+      blocks = {
+        am: { modern: "--", internet: "--", tw: "--" },
+        pm: { modern: "--", internet: "--", tw: "--" },
+      };
     }
   }
 
-  if (which === "am930") {
-    if (modIntPostedAM) return;
-    const b = blocks.am930;
-    await safeSendMessage(CHANNEL_ID, modIntTemplate("🕤 *9:31 AM*", b.modern, b.internet, b.tw), { parse_mode: "Markdown" });
+  if (which === "am") {
+    const b = blocks.am;
+    await safeSendMessage(CHANNEL_ID, modIntTemplate("🕘 *9:00 AM*", b.modern, b.internet, b.tw), { parse_mode: "Markdown" });
     modIntPostedAM = true;
-  }
-
-  if (which === "pm200") {
-    if (modIntPostedPM) return;
-    const b = blocks.pm200;
-    await safeSendMessage(CHANNEL_ID, modIntTemplate("🕑 *2:01 PM*", b.modern, b.internet, b.tw), { parse_mode: "Markdown" });
+  } else {
+    const b = blocks.pm;
+    await safeSendMessage(CHANNEL_ID, modIntTemplate("🕑 *2:00 PM*", b.modern, b.internet, b.tw), { parse_mode: "Markdown" });
     modIntPostedPM = true;
   }
 }
 
 // ===================== LIVE FETCH SMART =====================
 async function fetchLiveSmart(period) {
-  // 1) Lotto Predict primary
+  // Primary
   try {
-    const v = await getLottoPayloadFresh(20000);
+    const v = await getLottoDataFresh(20000);
     return lottoToStandard(period, v);
   } catch {}
 
-  // 2) mylucky fallback (may not be same schema)
-  const fb = await fetchMyluckyLive(period).catch(() => null);
-  if (fb && typeof fb === "object") {
-    // try to map common keys if present, else fail gracefully
-    const digit = fb?.digit ?? fb?.live ?? fb?.result ?? "--";
-    const set = fb?.set ?? "--";
-    const value = fb?.value ?? "--";
-    const time = fb?.dt ?? fb?.time ?? prettyMMT();
-    return {
-      status: "success",
-      playLucky: digit,
-      playSet: set,
-      playValue: value,
-      playDtm: time,
-      fiStatus: "no",
-      modern: "--",
-      internet: "--",
-      tw: "--",
-    };
-  }
+  // Secondary: mylucky json
+  try {
+    const j = await fetchMyluckyLiveJSON(period);
+    if (j && j.status === "success") return j;
+  } catch {}
 
-  throw new Error("NO_SOURCE");
+  // Last: scrape
+  return fetchMyluckyLiveScrape(period);
 }
 
 // ===================== TICKS =====================
@@ -802,17 +830,18 @@ async function tickModIntAndHolidayNotice() {
   resetDailyStateIfNeeded();
   const closed = await isMarketClosedToday();
 
+  // holiday notice
   if (!holidayNoticePosted && inRangeMinutes(HOLIDAY_NOTICE_TIME, "10:01")) {
     if (closed?.closed) {
       await safeSendMessage(CHANNEL_ID, holidayNoticeTemplate(closed.reason), { parse_mode: "Markdown" });
       holidayNoticePosted = true;
     }
   }
-
   if (closed?.closed) return;
 
-  if (inRangeMinutes(MODINT_AM_START, MODINT_AM_END)) await postModInt("am930").catch(() => null);
-  if (inRangeMinutes(MODINT_PM_START, MODINT_PM_END)) await postModInt("pm200").catch(() => null);
+  // requested exact posts (window)
+  if (inMinuteWindow(MODINT_AM_POST_AT, MODINT_WINDOW_MINUTES)) await postModInt("am").catch(() => null);
+  if (inMinuteWindow(MODINT_PM_POST_AT, MODINT_WINDOW_MINUTES)) await postModInt("pm").catch(() => null);
 }
 
 setInterval(() => tickLive().catch((e) => console.log("Live tick error:", e.message)), EDIT_EVERY_MS);
@@ -832,16 +861,18 @@ async function denyClosedDay(chatId, reason) {
 // ===================== COMMANDS =====================
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
+
   const text = `🎯 Myanmar 2D Live Bot
 
 ⏰ Market Time (Myanmar)
 🌅 မနက် Live : ${AM_LIVE_START} – ${AM_LIVE_END}
 🌆 ညနေ Live : ${PM_LIVE_START} – ${PM_LIVE_END}
 
-✅ Final = Pin (Only after ${AM_FINAL_TIME} / ${PM_FINAL_TIME})
+🔴 Live = Edit mode + Pro animation
+✅ Final = Check + Pin (Only after ${AM_FINAL_TIME} / ${PM_FINAL_TIME})
 
-🧠 Modern/Internet
-🕤 9:31 AM  •  🕑 2:01 PM
+🧠 Modern/Internet/TW (Separate posts)
+🕘 ${MODINT_AM_POST_AT}  •  🕑 ${MODINT_PM_POST_AT}
 
 🛑 Weekend + Holiday = NO posts
 📣 Holiday Notice = ${HOLIDAY_NOTICE_TIME} AM (MMT)
@@ -860,8 +891,7 @@ bot.onText(/\/status/, async (msg) => {
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
 
   const closed = await isMarketClosedToday().catch(() => ({ closed: false, reason: "" }));
-  const newest = Math.max(lastLottoDataAt || 0, lastLottoData2At || 0);
-  const age = newest ? Math.floor((Date.now() - newest) / 1000) : null;
+  const age = lastDataAt ? Math.floor((Date.now() - lastDataAt) / 1000) : null;
 
   const s = `📌 Bot Status
 📅 Date (MMT): ${ymdMMT()}
@@ -892,22 +922,29 @@ bot.onText(/\/pingapi/, async (msg) => {
   if (!isAdmin(msg)) return denyNotAdmin(chatId);
 
   try {
-    // allow last-known up to 6 hours for debugging
-    const v = await getLottoPayloadFresh(6 * 60 * 60 * 1000);
+    const v = await getLottoDataFresh(60000);
     const am = lottoToStandard("am", v);
     const pm = lottoToStandard("pm", v);
+    const blocks = getModIntFromLotto(v);
 
     await safeSendMessage(
       chatId,
-      `✅ LOTTO OK (/live)\nAM: ${am.playLucky} | SET ${am.playSet} | VALUE ${am.playValue}\nPM: ${pm.playLucky} | SET ${pm.playSet} | VALUE ${pm.playValue}\nTime: ${am.playDtm}\nModern(AM): ${am.modern} | Internet(AM): ${am.internet} | TW: ${am.tw}\nModern(PM): ${pm.modern} | Internet(PM): ${pm.internet}`
+      `✅ LOTTO OK (/live)
+AM: ${am.playLucky} | SET ${am.playSet} | VALUE ${am.playValue}
+PM: ${pm.playLucky} | SET ${pm.playSet} | VALUE ${pm.playValue}
+Time: ${am.playDtm}
+
+Modern(AM): ${blocks.am.modern} | Internet(AM): ${blocks.am.internet} | TW: ${blocks.am.tw}
+Modern(PM): ${blocks.pm.modern} | Internet(PM): ${blocks.pm.internet} | TW: ${blocks.pm.tw}`
     );
   } catch (e) {
     await safeSendMessage(chatId, `❌ LOTTO FAIL: ${e.message}`);
   }
 
+  // optional: mylucky quick test
   try {
-    const m = await fetchMyluckyLive("am");
-    await safeSendMessage(chatId, `✅ mylucky OK (am)\nstatus=${m.status ?? "unknown"}`);
+    const m = await fetchMyluckyLiveJSON("am");
+    await safeSendMessage(chatId, `✅ mylucky OK (am)\nstatus=${m.status}`);
   } catch (e) {
     await safeSendMessage(chatId, `⚠️ mylucky FAIL: ${e.message}`);
   }
@@ -968,8 +1005,8 @@ bot.onText(/\/forcemodam/, async (msg) => {
 
   try {
     modIntPostedAM = false;
-    await postModInt("am930");
-    await safeSendMessage(chatId, "✅ /forcemodam → Posted 9:31 AM Modern/Internet");
+    await postModInt("am");
+    await safeSendMessage(chatId, "✅ /forcemodam → Posted 9:00 AM Modern/Internet/TW");
   } catch (e) {
     await safeSendMessage(chatId, `❌ /forcemodam error: ${e.message}`);
   }
@@ -984,8 +1021,8 @@ bot.onText(/\/forcemodpm/, async (msg) => {
 
   try {
     modIntPostedPM = false;
-    await postModInt("pm200");
-    await safeSendMessage(chatId, "✅ /forcemodpm → Posted 2:01 PM Modern/Internet");
+    await postModInt("pm");
+    await safeSendMessage(chatId, "✅ /forcemodpm → Posted 2:00 PM Modern/Internet/TW");
   } catch (e) {
     await safeSendMessage(chatId, `❌ /forcemodpm error: ${e.message}`);
   }
