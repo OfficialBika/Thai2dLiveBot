@@ -1,14 +1,5 @@
 /*
- * Myanmar 2D Live Bot — FINAL (No Error)
- * --------------------------------------
- * ✅ Webhook (Render / VPS) + HTTP server receiver
- * ✅ Primary source: app.predictlotto.org socket.io (/live) with token
- * ✅ AM/PM Live: uses morningRound/eveningRound, with safe fallback to top-level digit/set/value
- * ✅ Modern/Internet/TW posts:
- *    - 9:00 AM (MMT) => modernMorning / internetMorning / tw
- *    - 2:00 PM (MMT) => modernEvening / internetEvening / tw
- * ✅ Weekend + Holiday: no live posts; Holiday notice at HOLIDAY_NOTICE_TIME
- * ✅ Admin commands: /status /pingapi /forceam /forcepm /forcemodam /forcemodpm /forceholiday
+ * Myanmar 2D Live Bot — FINAL 
  */
 
 "use strict";
@@ -50,7 +41,7 @@ const PM_FINAL_TIME = process.env.PM_FINAL_TIME || "16:30";
 const HOLIDAY_NOTICE_TIME = process.env.HOLIDAY_NOTICE_TIME || "10:00";
 
 // ✅ Modern/Internet requested times (MMT)
-const MODINT_AM_POST_AT = process.env.MODINT_AM_POST_AT || "09:00";
+const MODINT_AM_POST_AT = process.env.MODINT_AM_POST_AT || "09:30";
 const MODINT_PM_POST_AT = process.env.MODINT_PM_POST_AT || "14:00";
 const MODINT_WINDOW_MINUTES = Number(process.env.MODINT_WINDOW_MINUTES || 1);
 
@@ -594,17 +585,17 @@ function holidayNoticeTemplate(reason) {
   return `╭──────────────╮
 │ 🛑 Market 2D Closed │
 ╰──────────────╯
-📅 ${prettyMMT()}
+📅 ${upd || "--"}
 
 ဒီနေ့ 2D မထွက်ပါဘူး။
-
-🤖 *${BOT_USERNAME} ဖြင့်ဖန်တီးထားသည်*
 
 အကြောင်းရင်း 👇
 
 *${reason}*
 
-နောက်နေ့ 2D market ပြန်ဖွင့်တာနဲ့ Live ပြန်တင်ပေးပါမယ် ✅`;
+နောက်နေ့ 2D market ပြန်ဖွင့်တာနဲ့ Live ပြန်တင်ပေးပါမယ် ✅
+
+🤖 *${BOT_USERNAME} ဖြင့်ဖန်တီးထားသည်*`;
 }
 
 // ===================== MESSAGE TEMPLATES =====================
@@ -649,7 +640,7 @@ function modIntTemplate(timeTitle, modern, internet, tw) {
   return `╭──────────────╮
 │ 🧠 MODERN / INTERNET │
 ╰──────────────╯
-📅 ${prettyMMT()}
+📅 ${upd || "--"}
 
 ${timeTitle}
 
