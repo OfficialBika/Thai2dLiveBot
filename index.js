@@ -82,18 +82,17 @@ function ymdMMT() {
   return `${yyyy}-${mm}-${dd}`;
 }
 function prettyMMT() {
-  return nowMMTDateObj()
-    .toLocaleString("en-US", {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-      timeZone: "Asia/Yangon",
-    })
-    .replace(",", " •");
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Yangon",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  }).format(new Date()).replace(",", " •");
 }
+    
 function minutesNowMMT() {
   const d = nowMMTDateObj();
   return d.getHours() * 60 + d.getMinutes();
@@ -585,7 +584,7 @@ function holidayNoticeTemplate(reason) {
   return `╭──────────────╮
 │ 🛑 Market 2D Closed │
 ╰──────────────╯
-📅 ${upd || "--"}
+📅 ${prettyMMT()}
 
 ဒီနေ့ 2D မထွက်ပါဘူး။
 
@@ -640,7 +639,7 @@ function modIntTemplate(timeTitle, modern, internet, tw) {
   return `╭──────────────╮
 │ 🧠 MODERN / INTERNET │
 ╰──────────────╯
-📅 ${upd || "--"}
+📅 ${prettyMMT()}
 
 ${timeTitle}
 
