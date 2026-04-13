@@ -27,7 +27,7 @@ const EDIT_EVERY_MS = Number(process.env.EDIT_EVERY_MS || 5000);
 const LIVE_ENABLE_AM = process.env.LIVE_ENABLE_AM !== "0";
 const LIVE_ENABLE_PM = process.env.LIVE_ENABLE_PM !== "0";
 
-// Live windows (MMT) - FIXED wider windows
+// Live windows (MMT)
 const AM_LIVE_START = process.env.AM_LIVE_START || "11:30";
 const AM_LIVE_END = process.env.AM_LIVE_END || "12:10";
 const PM_LIVE_START = process.env.PM_LIVE_START || "15:55";
@@ -46,8 +46,9 @@ const MODINT_PM_POST_AT = process.env.MODINT_PM_POST_AT || "14:00";
 const MODINT_WINDOW_MINUTES = Number(process.env.MODINT_WINDOW_MINUTES || 2);
 
 // LOTTO freshness
-const LOTTO_PACKET_MAX_AGE_MS = Number(process.env.LOTTO_PACKET_MAX_AGE_MS || 120000);
-const LOTTO_WAIT_MS = Number(process.env.LOTTO_WAIT_MS || 10000);
+const LOTTO_PACKET_MAX_AGE_MS = Number(process.env.LOTTO_PACKET_MAX_AGE_MS || 600000);
+const LOTTO_WAIT_MS = Number(process.env.LOTTO_WAIT_MS || 15000);
+const LOTTO_WS_STALE_MS = Number(process.env.LOTTO_WS_STALE_MS || 70000);
 
 // ===================== VALIDATE =====================
 if (!BOT_TOKEN || !CHANNEL_ID || !PUBLIC_URL) {
@@ -280,38 +281,121 @@ async function fetchMyluckyLiveScrape(periodVal) {
 // ===================== LOTTO PREDICT socket.io PRIMARY =====================
 let lottoWs = null;
 let lottoConnected = false;
+
 let lastData = null;
 let lastDataAt = 0;
 let lastData2 = null;
 let lastData2At = 0;
+let lastLogs = [];
+let lastLogsAt = 0;
+let lastWsPacketAt = 0;
 
-function setData(eventName, obj) {
-  if (!obj || typeof obj !== "object") return;
-  if (eventName === "data") {
-    lastData = obj;
+function isNumLike(v) {
+  const s = String(v ?? "").trim();
+  return /^\d+(\.\d+)?$/.test(s.replace(/,/g, ""));
+}
+
+function parseServerTime(serverTime) {
+  const s = String(serverTime || "").trim();
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)$/i);
+  if (!m) return null;
+
+  const dd = Number(m[1]);
+  const mm = Number(m[2]);
+  const yyyy = Number(m[3]);
+  let hh = Number(m[4]);
+  const mi = Number(m[5]);
+  const ss = Number(m[6]);
+  const ap = m[7].toUpperCase();
+
+  if ([dd, mm, yyyy, hh, mi, ss].some(Number.isNaN)) return null;
+
+  hh = hh % 12;
+  if (ap === "PM") hh += 12;
+
+  const d = new Date(yyyy, mm - 1, dd, hh, mi, ss);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function serverTimeToYMD(serverTime) {
+  const d = parseServerTime(serverTime);
+  if (!d) return null;
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function serverTimeMeridiem(serverTime) {
+  const m = String(serverTime || "").match(/\b(AM|PM)\b/i);
+  return m ? m[1].toUpperCase() : null;
+}
+
+function serverTimeMinutes(serverTime) {
+  const d = parseServerTime(serverTime);
+  if (!d) return null;
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+function isTodayServerTime(serverTime) {
+  const ymd = serverTimeToYMD(serverTime);
+  return !!ymd && ymd === ymdMMT();
+}
+
+function isFinalByServerTime(period, serverTime) {
+  const mins = serverTimeMinutes(serverTime);
+  const target = parseHMToMinutes(period === "am" ? AM_FINAL_TIME : PM_FINAL_TIME);
+  if (mins === null || target === null) return false;
+  return mins >= target;
+}
+
+function setLottoEvent(eventName, payload) {
+  lastWsPacketAt = Date.now();
+
+  if (eventName === "data" && payload && typeof payload === "object") {
+    lastData = payload;
     lastDataAt = Date.now();
-  } else if (eventName === "data2") {
-    lastData2 = obj;
+    return;
+  }
+
+  if (eventName === "data2" && payload && typeof payload === "object") {
+    lastData2 = payload;
     lastData2At = Date.now();
+    return;
+  }
+
+  if (eventName === "logs" && Array.isArray(payload)) {
+    lastLogs = payload.filter((x) => x && typeof x === "object").slice(0, 200);
+    lastLogsAt = Date.now();
   }
 }
 
-function summarizePacket(eventName, dataObj) {
-  const mr = dataObj?.morningRound || {};
-  const er = dataObj?.eveningRound || {};
-  return `[LOTTO ${eventName}] time=${dataObj?.serverTime || "-"} isRunning=${String(dataObj?.isRunning)} round=${dataObj?.round ?? "-"} AM=${mr?.digit ?? "-"} PM=${er?.digit ?? "-"} set=${dataObj?.set ?? "-"} value=${dataObj?.value ?? "-"}`;
+function summarizePacket(eventName, payload) {
+  if (eventName === "logs") {
+    const top = Array.isArray(payload) && payload[0] ? payload[0] : null;
+    return `[LOTTO logs] count=${Array.isArray(payload) ? payload.length : 0} latest=${top?.serverTime || "-"} digit=${top?.digit ?? "-"} set=${top?.set ?? "-"} value=${top?.value ?? "-"}`;
+  }
+
+  const mr = payload?.morningRound || {};
+  const er = payload?.eveningRound || {};
+  return `[LOTTO ${eventName}] time=${payload?.serverTime || "-"} isRunning=${String(payload?.isRunning)} round=${payload?.round ?? "-"} AM=${mr?.digit ?? "-"} PM=${er?.digit ?? "-"} set=${payload?.set ?? "-"} value=${payload?.value ?? "-"}`;
 }
 
-function getFreshestLottoPacket(maxAgeMs = LOTTO_PACKET_MAX_AGE_MS) {
+function getFreshPacketItems(maxAgeMs = LOTTO_PACKET_MAX_AGE_MS) {
   const items = [];
 
   if (lastData && Date.now() - lastDataAt <= maxAgeMs) {
-    items.push({ name: "data", at: lastDataAt, v: lastData });
-  }
-  if (lastData2 && Date.now() - lastData2At <= maxAgeMs) {
-    items.push({ name: "data2", at: lastData2At, v: lastData2 });
+    items.push({ at: lastDataAt, v: lastData });
   }
 
+  if (lastData2 && Date.now() - lastData2At <= maxAgeMs) {
+    items.push({ at: lastData2At, v: lastData2 });
+  }
+
+  return items;
+}
+
+function chooseBestPacket(items) {
   if (!items.length) return null;
 
   const finalOne = items
@@ -324,20 +408,125 @@ function getFreshestLottoPacket(maxAgeMs = LOTTO_PACKET_MAX_AGE_MS) {
   return items[0].v;
 }
 
-async function waitFreshCombined(maxAgeMs = LOTTO_PACKET_MAX_AGE_MS, waitMs = LOTTO_WAIT_MS) {
+function getFreshestLottoPacket(maxAgeMs = LOTTO_PACKET_MAX_AGE_MS) {
+  return chooseBestPacket(getFreshPacketItems(maxAgeMs));
+}
+
+function getFreshestLottoPacketToday(maxAgeMs = LOTTO_PACKET_MAX_AGE_MS) {
+  return chooseBestPacket(
+    getFreshPacketItems(maxAgeMs).filter((x) => isTodayServerTime(x.v?.serverTime))
+  );
+}
+
+function extractRound(period, v) {
+  const isAM = period === "am";
+  const round = isAM ? (v?.morningRound || {}) : (v?.eveningRound || {});
+
+  const digit = isNumLike(round?.digit) ? round.digit : (isNumLike(v?.digit) ? v.digit : "--");
+  const set = isNumLike(round?.set) ? round.set : (isNumLike(v?.set) ? v.set : "--");
+  const value = isNumLike(round?.value) ? round.value : (isNumLike(v?.value) ? v.value : "--");
+
+  return { digit, set, value };
+}
+
+function lottoToStandard(period, v) {
+  const r = extractRound(period, v);
+  const isAM = period === "am";
+
+  return {
+    status: "success",
+    playLucky: r.digit,
+    playSet: r.set,
+    playValue: r.value,
+    playDtm: v?.serverTime ?? "--",
+    fiStatus: v?.isRunning === false ? "yes" : "no",
+    modern: isAM ? (v?.mornet?.modernMorning ?? "--") : (v?.mornet?.modernEvening ?? "--"),
+    internet: isAM ? (v?.mornet?.internetMorning ?? "--") : (v?.mornet?.internetEvening ?? "--"),
+    tw: v?.tw ?? "--",
+  };
+}
+
+function getFreshLogForPeriod(period, maxAgeMs = LOTTO_PACKET_MAX_AGE_MS) {
+  if (!Array.isArray(lastLogs) || !lastLogs.length) return null;
+  if (!lastLogsAt || Date.now() - lastLogsAt > maxAgeMs) return null;
+
+  const wanted = period === "am" ? "AM" : "PM";
+
+  const rows = lastLogs
+    .map((x, i) => ({ i, x, d: parseServerTime(x?.serverTime) }))
+    .filter((r) => r.d && isTodayServerTime(r.x?.serverTime) && serverTimeMeridiem(r.x?.serverTime) === wanted);
+
+  if (!rows.length) return null;
+
+  rows.sort((a, b) => b.d.getTime() - a.d.getTime() || a.i - b.i);
+  return rows[0].x;
+}
+
+function logToStandard(period, row, packetMeta) {
+  const isAM = period === "am";
+
+  return {
+    status: "success",
+    playLucky: isNumLike(row?.digit) ? row.digit : "--",
+    playSet: isNumLike(row?.set) ? row.set : "--",
+    playValue: isNumLike(row?.value) ? row.value : "--",
+    playDtm: row?.serverTime ?? "--",
+    fiStatus: packetMeta?.isRunning === false || isFinalByServerTime(period, row?.serverTime) ? "yes" : "no",
+    modern: isAM ? (packetMeta?.mornet?.modernMorning ?? "--") : (packetMeta?.mornet?.modernEvening ?? "--"),
+    internet: isAM ? (packetMeta?.mornet?.internetMorning ?? "--") : (packetMeta?.mornet?.internetEvening ?? "--"),
+    tw: packetMeta?.tw ?? "--",
+  };
+}
+
+function getBestLottoStandardSync(period, maxAgeMs = LOTTO_PACKET_MAX_AGE_MS) {
+  const packetToday = getFreshestLottoPacketToday(maxAgeMs);
+  const logRow = getFreshLogForPeriod(period, maxAgeMs);
+
+  if (logRow) return logToStandard(period, logRow, packetToday);
+  if (packetToday) return lottoToStandard(period, packetToday);
+
+  return null;
+}
+
+async function waitFreshLottoStandard(period, maxAgeMs = LOTTO_PACKET_MAX_AGE_MS, waitMs = LOTTO_WAIT_MS) {
   const deadline = Date.now() + waitMs;
+
   while (Date.now() < deadline) {
-    const v = getFreshestLottoPacket(maxAgeMs);
+    const v = getBestLottoStandardSync(period, maxAgeMs);
     if (v) return v;
     await sleep(250);
   }
+
   throw new Error("LOTTO_NO_DATA");
 }
 
 async function getFreshLottoPacket(maxAgeMs = LOTTO_PACKET_MAX_AGE_MS) {
   const v = getFreshestLottoPacket(maxAgeMs);
   if (v) return v;
-  return waitFreshCombined(maxAgeMs);
+
+  const deadline = Date.now() + LOTTO_WAIT_MS;
+  while (Date.now() < deadline) {
+    const retry = getFreshestLottoPacket(maxAgeMs);
+    if (retry) return retry;
+    await sleep(250);
+  }
+
+  throw new Error("LOTTO_NO_DATA");
+}
+
+function getModIntFromLotto(v) {
+  return {
+    am: {
+      modern: v?.mornet?.modernMorning ?? "--",
+      internet: v?.mornet?.internetMorning ?? "--",
+      tw: v?.tw ?? "--",
+    },
+    pm: {
+      modern: v?.mornet?.modernEvening ?? "--",
+      internet: v?.mornet?.internetEvening ?? "--",
+      tw: v?.tw ?? "--",
+    },
+  };
 }
 
 function startLottoWs() {
@@ -354,10 +543,13 @@ function startLottoWs() {
       lottoConnected = false;
 
       ws.on("open", () => {
+        lastWsPacketAt = Date.now();
         console.log("✅ LOTTO WS open");
       });
 
       ws.on("message", (buf) => {
+        lastWsPacketAt = Date.now();
+
         const raw = buf.toString("utf8");
         const packets = raw.split("\x1e").filter(Boolean);
 
@@ -387,9 +579,9 @@ function startLottoWs() {
               const eventName = arr?.[0];
               const dataObj = arr?.[1];
 
-              if ((eventName === "data" || eventName === "data2") && dataObj) {
+              if (eventName === "data" || eventName === "data2" || eventName === "logs") {
                 console.log(summarizePacket(eventName, dataObj));
-                setData(eventName, dataObj);
+                setLottoEvent(eventName, dataObj);
               }
             } catch (e) {
               console.log("❌ parse fail:", e.message);
@@ -422,54 +614,18 @@ function startLottoWs() {
 }
 startLottoWs();
 
-// ===================== PARSERS (AM/PM FIX) =====================
-function isNumLike(v) {
-  const s = String(v ?? "").trim();
-  return /^\d+(\.\d+)?$/.test(s.replace(/,/g, ""));
-}
+setInterval(() => {
+  if (!lottoWs) return;
+  if (lottoWs.readyState !== WebSocket.OPEN) return;
+  if (!lastWsPacketAt) return;
 
-function extractRound(period, v) {
-  const isAM = period === "am";
-  const round = isAM ? (v?.morningRound || {}) : (v?.eveningRound || {});
-
-  const digit = isNumLike(round?.digit) ? round.digit : (isNumLike(v?.digit) ? v.digit : "--");
-  const set = isNumLike(round?.set) ? round.set : (isNumLike(v?.set) ? v.set : "--");
-  const value = isNumLike(round?.value) ? round.value : (isNumLike(v?.value) ? v.value : "--");
-
-  return { digit, set, value };
-}
-
-function lottoToStandard(period, v) {
-  const r = extractRound(period, v);
-  const isAM = period === "am";
-
-  return {
-    status: "success",
-    playLucky: r.digit,
-    playSet: r.set,
-    playValue: r.value,
-    playDtm: v?.serverTime ?? "--",
-    fiStatus: v?.isRunning === false ? "yes" : "no",
-    modern: isAM ? (v?.mornet?.modernMorning ?? "--") : (v?.mornet?.modernEvening ?? "--"),
-    internet: isAM ? (v?.mornet?.internetMorning ?? "--") : (v?.mornet?.internetEvening ?? "--"),
-    tw: v?.tw ?? "--",
-  };
-}
-
-function getModIntFromLotto(v) {
-  return {
-    am: {
-      modern: v?.mornet?.modernMorning ?? "--",
-      internet: v?.mornet?.internetMorning ?? "--",
-      tw: v?.tw ?? "--",
-    },
-    pm: {
-      modern: v?.mornet?.modernEvening ?? "--",
-      internet: v?.mornet?.internetEvening ?? "--",
-      tw: v?.tw ?? "--",
-    },
-  };
-}
+  const age = Date.now() - lastWsPacketAt;
+  if (age > LOTTO_WS_STALE_MS) {
+    console.log(`⚠️ LOTTO WS stale (${age}ms) -> reconnect`);
+    lottoConnected = false;
+    try { lottoWs.terminate(); } catch {}
+  }
+}, 15000);
 
 async function fetchModernInternetBlocksFallback() {
   const res = await axios.get(HOME_URL, {
@@ -759,7 +915,9 @@ async function postModInt(which) {
 
   try {
     const v = await getFreshLottoPacket(LOTTO_PACKET_MAX_AGE_MS);
-    blocks = getModIntFromLotto(v);
+    if (v && isTodayServerTime(v.serverTime)) {
+      blocks = getModIntFromLotto(v);
+    }
   } catch {}
 
   if (!blocks) {
@@ -791,8 +949,8 @@ async function postModInt(which) {
 // ===================== LIVE FETCH SMART =====================
 async function fetchLiveSmart(period) {
   try {
-    const v = await getFreshLottoPacket(LOTTO_PACKET_MAX_AGE_MS);
-    return lottoToStandard(period, v);
+    const v = await waitFreshLottoStandard(period, LOTTO_PACKET_MAX_AGE_MS, LOTTO_WAIT_MS);
+    if (v && v.status === "success") return v;
   } catch {}
 
   try {
@@ -809,12 +967,7 @@ async function tickLive() {
   const closed = await isMarketClosedToday();
   if (closed?.closed) return;
 
-  if (
-    LIVE_ENABLE_AM &&
-    afterHM(AM_LIVE_START) &&
-    beforeOrEqualHM(AM_FINAL_TIME, 10) &&
-    !finalDoneAM
-  ) {
+  if (LIVE_ENABLE_AM && inRangeMinutes(AM_LIVE_START, AM_LIVE_END) && !finalDoneAM) {
     const data = await fetchLiveSmart("am").catch(() => null);
     if (data && data.status === "success") {
       if (data.fiStatus === "yes" && looksLikeFinalTime("am", data.playDtm)) {
@@ -825,12 +978,7 @@ async function tickLive() {
     }
   }
 
-  if (
-    LIVE_ENABLE_PM &&
-    afterHM(PM_LIVE_START) &&
-    beforeOrEqualHM(PM_FINAL_TIME, 15) &&
-    !finalDonePM
-  ) {
+  if (LIVE_ENABLE_PM && inRangeMinutes(PM_LIVE_START, PM_LIVE_END) && !finalDonePM) {
     const data = await fetchLiveSmart("pm").catch(() => null);
     if (data && data.status === "success") {
       if (data.fiStatus === "yes" && looksLikeFinalTime("pm", data.playDtm)) {
@@ -907,10 +1055,13 @@ bot.onText(/\/status/, async (msg) => {
   const closed = await isMarketClosedToday().catch(() => ({ closed: false, reason: "" }));
   const age1 = lastDataAt ? Math.floor((Date.now() - lastDataAt) / 1000) : null;
   const age2 = lastData2At ? Math.floor((Date.now() - lastData2At) / 1000) : null;
+  const logsAge = lastLogsAt ? Math.floor((Date.now() - lastLogsAt) / 1000) : null;
+  const wsAge = lastWsPacketAt ? Math.floor((Date.now() - lastWsPacketAt) / 1000) : null;
 
-  const freshest = getFreshestLottoPacket(LOTTO_PACKET_MAX_AGE_MS);
-  const freshestTime = freshest?.serverTime || "-";
-  const freshestIsRunning = freshest ? String(freshest.isRunning) : "-";
+  const freshestAny = getFreshestLottoPacket(24 * 60 * 60 * 1000);
+  const freshestToday = getFreshestLottoPacketToday(24 * 60 * 60 * 1000);
+  const latestLogAM = getFreshLogForPeriod("am", 24 * 60 * 60 * 1000);
+  const latestLogPM = getFreshLogForPeriod("pm", 24 * 60 * 60 * 1000);
 
   const s = `📌 Bot Status
 📅 Date (MMT): ${ymdMMT()}
@@ -929,10 +1080,16 @@ bot.onText(/\/status/, async (msg) => {
 📢 Channel: ${CHANNEL_ID}
 
 🛰 WS Joined /live: ${lottoConnected ? "YES" : "NO"}
+🛰 ws last packet age: ${wsAge === null ? "none" : `${wsAge}s`}
 🛰 data age: ${age1 === null ? "none" : `${age1}s`}
 🛰 data2 age: ${age2 === null ? "none" : `${age2}s`}
-🛰 freshest time: ${freshestTime}
-🛰 freshest isRunning: ${freshestIsRunning}
+🛰 logs age: ${logsAge === null ? "none" : `${logsAge}s`}
+
+🛰 latest packet(any): ${freshestAny?.serverTime || "-"}
+🛰 latest packet(today): ${freshestToday?.serverTime || "-"}
+🛰 latest AM log: ${latestLogAM?.serverTime || "-"}
+🛰 latest PM log: ${latestLogPM?.serverTime || "-"}
+
 🛰 token: ${LOTTO_TOKEN}
 🛰 host: ${LOTTO_WS_URL}`;
 
